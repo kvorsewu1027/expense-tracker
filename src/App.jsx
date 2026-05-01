@@ -109,18 +109,18 @@ function sanitizeState(source) {
 function App() {
   const [trackerState, setTrackerState] = useState(loadInitialState)
   const [formState, setFormState] = useState(createDefaultFormState)
-  const [budgetDraft, setBudgetDraft] = useState('')
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false)
 
   const { expenses, budgetsByMonth, selectedMonth } = trackerState
+  const [budgetDraft, setBudgetDraft] = useState(() =>
+    budgetsByMonth[selectedMonth] !== undefined ? String(budgetsByMonth[selectedMonth]) : ''
+  )
   const expensesForMonth = expenses
     .filter((expense) => expense.date.startsWith(selectedMonth))
     .sort((left, right) => right.date.localeCompare(left.date))
   const totalSpent = sumExpenses(expensesForMonth)
-  const categoryTotals = getCategoryTotals(expensesForMonth)
+  const groupedCategories = getCategoryGroups(expensesForMonth)
   const transactionCount = expensesForMonth.length
-  const activeDays = new Set(expensesForMonth.map((expense) => expense.date)).size || 1
-  const dailyAverage = roundCurrency(totalSpent / activeDays)
-  const topCategory = categoryTotals[0] ?? null
   const budget = Number(budgetsByMonth[selectedMonth] ?? 0)
   const budgetProgress = budget ? Math.min((totalSpent / budget) * 100, 100) : 0
   const budgetDifference = roundCurrency(budget - totalSpent)
@@ -130,12 +130,15 @@ function App() {
   }, [trackerState])
 
   useEffect(() => {
-    setBudgetDraft(
-      budgetsByMonth[selectedMonth] !== undefined
-        ? String(budgetsByMonth[selectedMonth])
-        : ''
-    )
-  }, [budgetsByMonth, selectedMonth])
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setIsExpenseModalOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   function handleFormChange(event) {
     const { name, value } = event.target
@@ -167,12 +170,18 @@ function App() {
       return
     }
 
+    const nextMonth = nextExpense.date.slice(0, 7)
+
     setTrackerState((current) => ({
       ...current,
       expenses: [nextExpense, ...current.expenses],
-      selectedMonth: nextExpense.date.slice(0, 7),
+      selectedMonth: nextMonth,
     }))
+    setBudgetDraft(
+      budgetsByMonth[nextMonth] !== undefined ? String(budgetsByMonth[nextMonth]) : ''
+    )
     setFormState(createDefaultFormState())
+    setIsExpenseModalOpen(false)
   }
 
   function handleMonthChange(event) {
@@ -181,6 +190,9 @@ function App() {
       ...current,
       selectedMonth: nextMonth,
     }))
+    setBudgetDraft(
+      budgetsByMonth[nextMonth] !== undefined ? String(budgetsByMonth[nextMonth]) : ''
+    )
   }
 
   function handleBudgetSave() {
@@ -235,7 +247,13 @@ function App() {
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        setTrackerState(sanitizeState(JSON.parse(String(reader.result || '{}'))))
+        const importedState = sanitizeState(JSON.parse(String(reader.result || '{}')))
+        setTrackerState(importedState)
+        setBudgetDraft(
+          importedState.budgetsByMonth[importedState.selectedMonth] !== undefined
+            ? String(importedState.budgetsByMonth[importedState.selectedMonth])
+            : ''
+        )
       } catch (error) {
         console.error('Unable to import file.', error)
         window.alert(
@@ -249,306 +267,282 @@ function App() {
   }
 
   return (
-    <div className="page-shell">
-      <header className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">Monthly expense tracker</p>
-          <h1>Ledger Bloom</h1>
-          <p className="hero-text">
-            A responsive expense tracker that feels comfortable on laptop and phone,
-            with monthly summaries, category insights, and simple data export.
-          </p>
+    <div className="app-shell">
+      <aside className="sidebar" aria-label="Workspace navigation">
+        <div className="brand-block">
+          <span className="brand-mark">LB</span>
+          <div>
+            <p className="workspace-label">Workspace</p>
+            <h1>Ledger Bloom</h1>
+          </div>
         </div>
 
-        <div className="hero-actions">
-          <button className="ghost-button" type="button" onClick={handleExport}>
-            Export data
-          </button>
-          <label className="ghost-button file-input-label">
-            Import data
-            <input type="file" accept="application/json" onChange={handleImport} />
-          </label>
-        </div>
-      </header>
+        <nav className="category-nav" aria-label="Expense categories">
+          {groupedCategories.map(({ category, amount, count }) => (
+            <a href={`#${toAnchorId(category)}`} key={category}>
+              <span>{category}</span>
+              <strong>{count ? formatCurrency(amount) : '-'}</strong>
+            </a>
+          ))}
+        </nav>
+      </aside>
 
-      <main className="layout">
-        <section className="panel panel-form">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Quick add</p>
-              <h2>Add an expense</h2>
-            </div>
-            <p className="section-hint">Stored locally in this browser.</p>
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <p className="breadcrumb">Expenses / {formatMonthLabel(selectedMonth)}</p>
+            <h2>Monthly expense board</h2>
           </div>
 
-          <form className="expense-form" onSubmit={handleSubmit}>
-            <label>
-              <span>Expense name</span>
-              <input
-                name="name"
-                type="text"
-                value={formState.name}
-                onChange={handleFormChange}
-                placeholder="Groceries, rent, train ticket..."
-                required
-              />
-            </label>
-
-            <div className="field-row">
-              <label>
-                <span>Amount</span>
-                <input
-                  name="amount"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={formState.amount}
-                  onChange={handleFormChange}
-                  placeholder="0.00"
-                  required
-                />
-              </label>
-
-              <label>
-                <span>Date</span>
-                <input
-                  name="date"
-                  type="date"
-                  value={formState.date}
-                  onChange={handleFormChange}
-                  required
-                />
-              </label>
-            </div>
-
-            <div className="field-row">
-              <label>
-                <span>Category</span>
-                <select
-                  name="category"
-                  value={formState.category}
-                  onChange={handleFormChange}
-                >
-                  {CATEGORIES.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Payment</span>
-                <select
-                  name="payment"
-                  value={formState.payment}
-                  onChange={handleFormChange}
-                >
-                  {PAYMENTS.map((payment) => (
-                    <option key={payment} value={payment}>
-                      {payment}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label>
-              <span>Note</span>
-              <textarea
-                name="note"
-                rows="3"
-                value={formState.note}
-                onChange={handleFormChange}
-                placeholder="Optional note"
-              />
-            </label>
-
-            <div className="budget-row">
-              <label>
-                <span>Monthly budget</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={budgetDraft}
-                  onChange={(event) => setBudgetDraft(event.target.value)}
-                  placeholder="Set a target for the selected month"
-                />
-              </label>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={handleBudgetSave}
-              >
-                Save budget
-              </button>
-            </div>
-
-            <button className="primary-button" type="submit">
-              Add expense
-            </button>
-          </form>
-        </section>
-
-        <section className="panel panel-dashboard">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Overview</p>
-              <h2>Monthly snapshot</h2>
-            </div>
+          <div className="topbar-actions">
             <label className="month-picker">
               <span>Month</span>
               <input type="month" value={selectedMonth} onChange={handleMonthChange} />
             </label>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => setIsExpenseModalOpen(true)}
+            >
+              New expense
+            </button>
+          </div>
+        </header>
+
+        <section className="metrics-row" aria-label="Monthly summary">
+          <SummaryCard label="Total spent" value={formatCurrency(totalSpent)} />
+          <SummaryCard label="Transactions" value={String(transactionCount)} />
+          <SummaryCard
+            label="Budget"
+            value={budget ? formatCurrency(budget) : 'Not set'}
+            detail={
+              budget
+                ? budgetDifference >= 0
+                  ? `${formatCurrency(budgetDifference)} left`
+                  : `${formatCurrency(Math.abs(budgetDifference))} over`
+                : 'Add one below'
+            }
+          />
+        </section>
+
+        <section className="controls-strip" aria-label="Budget and data controls">
+          <div className="budget-control">
+            <label>
+              <span>Monthly budget</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={budgetDraft}
+                onChange={(event) => setBudgetDraft(event.target.value)}
+                placeholder="0.00"
+              />
+            </label>
+            <button className="secondary-button" type="button" onClick={handleBudgetSave}>
+              Save
+            </button>
           </div>
 
-          <div className="summary-grid">
-            <SummaryCard
-              label="Total spent"
-              value={formatCurrency(totalSpent)}
-              detail={`For ${formatMonthLabel(selectedMonth)}`}
-            />
-            <SummaryCard
-              label="Transactions"
-              value={String(transactionCount)}
-              detail={
-                transactionCount
-                  ? 'Keep logging to spot patterns.'
-                  : 'No spending logged yet.'
-              }
-            />
-            <SummaryCard
-              label="Daily average"
-              value={formatCurrency(dailyAverage)}
-              detail="Average across active spending days."
-            />
-            <SummaryCard
-              label="Top category"
-              value={topCategory ? topCategory.category : 'No data'}
-              detail={
-                topCategory
-                  ? formatCurrency(topCategory.amount)
-                  : 'Add your first expense.'
-              }
-            />
-          </div>
-
-          <section className="budget-panel">
-            <div className="budget-copy">
-              <p className="section-label">Budget</p>
-              <h3>
-                {budget
-                  ? `${formatCurrency(totalSpent)} of ${formatCurrency(budget)} used`
-                  : 'No budget set yet'}
-              </h3>
-              <p id="budgetText">
-                {budget
-                  ? budgetDifference >= 0
-                    ? `${formatCurrency(budgetDifference)} remaining this month.`
-                    : `${formatCurrency(Math.abs(budgetDifference))} over budget.`
-                  : 'Add a monthly budget to see whether your spending is on track.'}
-              </p>
-            </div>
-            <div className="budget-bar" aria-hidden="true">
+          <div className="budget-track" aria-label="Budget usage">
+            <div className="budget-bar">
               <div
                 className="budget-progress"
                 style={{ width: `${budgetProgress}%` }}
               />
             </div>
-          </section>
+          </div>
 
-          <section className="breakdown-panel">
-            <div className="panel-heading compact">
-              <div>
-                <p className="section-label">Breakdown</p>
-                <h3>Spending by category</h3>
-              </div>
-            </div>
-
-            {categoryTotals.length ? (
-              <div className="category-breakdown">
-                {categoryTotals.map(({ category, amount }) => {
-                  const share = totalSpent
-                    ? Math.round((amount / totalSpent) * 100)
-                    : 0
-
-                  return (
-                    <div className="category-row" key={category}>
-                      <div className="category-label-row">
-                        <strong>{category}</strong>
-                        <span>
-                          {formatCurrency(amount)} / {share}%
-                        </span>
-                      </div>
-                      <div className="category-bar">
-                        <div
-                          className="category-fill"
-                          style={{ width: `${share}%` }}
-                        />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <p className="empty-state">
-                Category totals will appear here once you log expenses.
-              </p>
-            )}
-          </section>
+          <div className="data-actions">
+            <button className="ghost-button" type="button" onClick={handleExport}>
+              Export
+            </button>
+            <label className="ghost-button file-input-label">
+              Import
+              <input type="file" accept="application/json" onChange={handleImport} />
+            </label>
+          </div>
         </section>
 
-        <section className="panel panel-history">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">History</p>
-              <h2>Transactions</h2>
-            </div>
-            <p className="section-hint">
-              {transactionCount} transaction{transactionCount === 1 ? '' : 's'} in{' '}
-              {formatMonthLabel(selectedMonth)}
-            </p>
-          </div>
+        <section className="category-board" aria-label="Expenses by category">
+          {groupedCategories.map(({ category, amount, expenses: categoryExpenses }) => (
+            <article className="category-section" id={toAnchorId(category)} key={category}>
+              <header className="category-section-header">
+                <div>
+                  <p className="section-label">{category}</p>
+                  <h3>{formatCurrency(amount)}</h3>
+                </div>
+                <span>{categoryExpenses.length} items</span>
+              </header>
 
-          <div className="transaction-list">
-            {expensesForMonth.length ? (
-              expensesForMonth.map((expense) => (
-                <article className="transaction-card" key={expense.id}>
-                  <div className="transaction-main">
-                    <div>
-                      <h3 className="transaction-name">{expense.name}</h3>
-                      <p className="transaction-meta">
-                        {formatDate(expense.date)} / {expense.category} /{' '}
-                        {expense.payment}
-                      </p>
-                    </div>
-                    <strong className="transaction-amount">
-                      {formatCurrency(expense.amount)}
-                    </strong>
+              {categoryExpenses.length ? (
+                <div className="expense-table" role="table" aria-label={`${category} expenses`}>
+                  <div className="expense-row expense-row-head" role="row">
+                    <span>Name</span>
+                    <span>Date</span>
+                    <span>Payment</span>
+                    <span>Amount</span>
+                    <span aria-label="Actions" />
                   </div>
-
-                  {expense.note ? (
-                    <p className="transaction-note">{expense.note}</p>
-                  ) : null}
-
-                  <button
-                    className="delete-button"
-                    type="button"
-                    onClick={() => handleDelete(expense.id)}
-                  >
-                    Delete
-                  </button>
-                </article>
-              ))
-            ) : (
-              <p className="empty-state">
-                No expenses in this month yet. Add one from the form to get started.
-              </p>
-            )}
-          </div>
+                  {categoryExpenses.map((expense) => (
+                    <div className="expense-row" role="row" key={expense.id}>
+                      <span>
+                        <strong>{expense.name}</strong>
+                        {expense.note ? <small>{expense.note}</small> : null}
+                      </span>
+                      <span>{formatDate(expense.date)}</span>
+                      <span>{expense.payment}</span>
+                      <span>{formatCurrency(expense.amount)}</span>
+                      <button
+                        className="delete-button"
+                        type="button"
+                        onClick={() => handleDelete(expense.id)}
+                        aria-label={`Delete ${expense.name}`}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  className="empty-category"
+                  type="button"
+                  onClick={() => {
+                    setFormState((current) => ({ ...current, category }))
+                    setIsExpenseModalOpen(true)
+                  }}
+                >
+                  Add a {category.toLowerCase()} expense
+                </button>
+              )}
+            </article>
+          ))}
         </section>
       </main>
+
+      {isExpenseModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsExpenseModalOpen(false)}>
+          <section
+            className="expense-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="expense-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header">
+              <div>
+                <p className="section-label">New record</p>
+                <h2 id="expense-modal-title">Add expense</h2>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setIsExpenseModalOpen(false)}
+                aria-label="Close add expense dialog"
+              >
+                X
+              </button>
+            </header>
+
+            <form className="expense-form" onSubmit={handleSubmit}>
+              <label>
+                <span>Expense name</span>
+                <input
+                  name="name"
+                  type="text"
+                  value={formState.name}
+                  onChange={handleFormChange}
+                  placeholder="Groceries, rent, train ticket..."
+                  required
+                />
+              </label>
+
+              <div className="field-row">
+                <label>
+                  <span>Amount</span>
+                  <input
+                    name="amount"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={formState.amount}
+                    onChange={handleFormChange}
+                    placeholder="0.00"
+                    required
+                  />
+                </label>
+
+                <label>
+                  <span>Date</span>
+                  <input
+                    name="date"
+                    type="date"
+                    value={formState.date}
+                    onChange={handleFormChange}
+                    required
+                  />
+                </label>
+              </div>
+
+              <div className="field-row">
+                <label>
+                  <span>Category</span>
+                  <select
+                    name="category"
+                    value={formState.category}
+                    onChange={handleFormChange}
+                  >
+                    {CATEGORIES.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span>Payment</span>
+                  <select
+                    name="payment"
+                    value={formState.payment}
+                    onChange={handleFormChange}
+                  >
+                    {PAYMENTS.map((payment) => (
+                      <option key={payment} value={payment}>
+                        {payment}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                <span>Note</span>
+                <textarea
+                  name="note"
+                  rows="3"
+                  value={formState.note}
+                  onChange={handleFormChange}
+                  placeholder="Optional note"
+                />
+              </label>
+
+              <footer className="modal-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => setIsExpenseModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button className="primary-button" type="submit">
+                  Add expense
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -558,31 +552,31 @@ function SummaryCard({ label, value, detail }) {
     <article className="summary-card">
       <p className="summary-label">{label}</p>
       <strong className="summary-value">{value}</strong>
-      <span className="summary-detail">{detail}</span>
+      {detail ? <span className="summary-detail">{detail}</span> : null}
     </article>
   )
 }
 
-function getCategoryTotals(expenses) {
-  const totals = expenses.reduce((accumulator, expense) => {
-    accumulator[expense.category] =
-      (accumulator[expense.category] || 0) + Number(expense.amount || 0)
-
-    return accumulator
-  }, {})
-
-  return Object.entries(totals)
-    .map(([category, amount]) => ({
+function getCategoryGroups(expenses) {
+  return CATEGORIES.map((category) => {
+    const categoryExpenses = expenses.filter((expense) => expense.category === category)
+    return {
       category,
-      amount: roundCurrency(amount),
-    }))
-    .sort((left, right) => right.amount - left.amount)
+      expenses: categoryExpenses,
+      count: categoryExpenses.length,
+      amount: sumExpenses(categoryExpenses),
+    }
+  })
 }
 
 function sumExpenses(expenses) {
   return roundCurrency(
     expenses.reduce((total, expense) => total + Number(expense.amount || 0), 0)
   )
+}
+
+function toAnchorId(value) {
+  return value.toLowerCase().replace(/\s+/g, '-')
 }
 
 function toMonthKey(date) {
@@ -603,7 +597,6 @@ function formatCurrency(value) {
 function formatDate(dateString) {
   const date = new Date(`${dateString}T12:00:00`)
   return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
     month: 'short',
     day: 'numeric',
   }).format(date)

@@ -1,22 +1,13 @@
 :root {
-  --bg: #f3efe7;
-  --paper: rgba(255, 252, 247, 0.92);
-  --ink: #1f2430;
-  --muted: #5f6777;
-  --line: rgba(31, 36, 48, 0.12);
-  --brand: #186f65;
-  --brand-deep: #0f4d47;
-  --accent: #dd8b4f;
+  --bg: #f7f7f5;
+  --ink: #202124;
+  --muted: #6f7378;
+  --line: #e5e5e2;
+  --brand: #2f6f5e;
   --danger: #a54343;
-  --shadow: 0 20px 60px rgba(57, 41, 16, 0.12);
-  --radius-xl: 28px;
-  --radius-lg: 20px;
-  font-family: 'Trebuchet MS', 'Aptos', 'Segoe UI', sans-serif;
+  font-family: 'Aptos', 'Segoe UI', sans-serif;
   color: var(--ink);
-  background:
-    radial-gradient(circle at top left, rgba(221, 139, 79, 0.28), transparent 28%),
-    radial-gradient(circle at top right, rgba(24, 111, 101, 0.18), transparent 24%),
-    linear-gradient(180deg, #faf6ef 0%, var(--bg) 54%, #ebe4d6 100%);
+  background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -61,8 +52,8 @@ select,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
-  padding: 0.9rem 1rem;
-  background: rgba(255, 255, 255, 0.74);
+  padding: 0.75rem 0.85rem;
+  background: #fff;
   color: var(--ink);
 }
 
