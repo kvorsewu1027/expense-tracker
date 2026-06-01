@@ -33,7 +33,7 @@ git commit -m "Initial React expense tracker"
 
 ## Shared ledger sync
 
-By default, Chu & Liang's Expense Tracker still saves to the browser so it works offline during development. To make the deployed app use the same ledger on laptop and phone, configure a Firebase Realtime Database URL:
+By default, Chu & Liang's Expense Tracker still saves to the browser so it works offline during development. That means a laptop and phone will not share expenses until both are pointed at the same shared ledger. To make the deployed app use the same ledger on both devices, configure a Firebase Realtime Database URL:
 
 1. Create a Firebase project and enable Realtime Database.
 2. Create one ledger path, for example `ledgers/main`.
@@ -44,6 +44,13 @@ VITE_LEDGER_SYNC_URL=https://your-project-id-default-rtdb.europe-west1.firebased
 ```
 
 The app adds `.json` automatically for Firebase's REST API. For a personal ledger without sign-in, the database rules must allow reads and writes to that path. Keep the database URL private, or add Firebase auth before using this for sensitive shared data.
+
+You can also configure the deployed app without rebuilding:
+
+1. Open Settings on the laptop that already has the expenses.
+2. Paste the shared ledger URL into "Shared ledger URL" and choose "Save sync".
+3. Reopen Settings after the page reloads and choose "Copy phone link".
+4. Open that copied link on the phone. The phone stores the same ledger URL and loads the shared expenses.
 
 ## Import and export
 

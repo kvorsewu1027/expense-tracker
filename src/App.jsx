@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const STORAGE_KEY = 'ledger-bloom-react-state'
-const REMOTE_SYNC_URL = normalizeSyncUrl(import.meta.env.VITE_LEDGER_SYNC_URL)
+const SYNC_URL_STORAGE_KEY = `${STORAGE_KEY}-sync-url`
+const BUILD_SYNC_URL = normalizeSyncUrl(import.meta.env.VITE_LEDGER_SYNC_URL)
+const SYNC_URL_QUERY_PARAMS = ['syncUrl', 'ledgerSyncUrl']
+const REMOTE_SYNC_URL = getInitialRemoteSyncUrl()
 const SYNC_POLL_INTERVAL_MS = 10000
 const CSV_COLUMNS = [
   'type',
@@ -131,6 +134,39 @@ function normalizeSyncUrl(value) {
   }
 
   return trimmedValue.endsWith('.json') ? trimmedValue : `${trimmedValue}.json`
+}
+
+function getInitialRemoteSyncUrl() {
+  if (typeof window === 'undefined') {
+    return BUILD_SYNC_URL
+  }
+
+  try {
+    const pageUrl = new URL(window.location.href)
+    const sharedSyncUrl = SYNC_URL_QUERY_PARAMS.map((paramName) =>
+      normalizeSyncUrl(pageUrl.searchParams.get(paramName))
+    ).find(Boolean)
+
+    if (sharedSyncUrl) {
+      window.localStorage.setItem(SYNC_URL_STORAGE_KEY, sharedSyncUrl)
+      SYNC_URL_QUERY_PARAMS.forEach((paramName) => pageUrl.searchParams.delete(paramName))
+      window.history.replaceState(
+        null,
+        '',
+        `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`
+      )
+      return sharedSyncUrl
+    }
+
+    return normalizeSyncUrl(window.localStorage.getItem(SYNC_URL_STORAGE_KEY)) || BUILD_SYNC_URL
+  } catch (error) {
+    console.error('Unable to read shared ledger configuration.', error)
+    return BUILD_SYNC_URL
+  }
+}
+
+function formatSyncUrlForInput(syncUrl) {
+  return syncUrl.endsWith('.json') ? syncUrl.slice(0, -5) : syncUrl
 }
 
 async function fetchSharedLedger() {
@@ -351,10 +387,14 @@ function App() {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [editingExpenseId, setEditingExpenseId] = useState(null)
+  const [syncUrlDraft, setSyncUrlDraft] = useState(() => formatSyncUrlForInput(REMOTE_SYNC_URL))
+  const [syncCopyStatus, setSyncCopyStatus] = useState('')
   const [hasCompletedInitialSync, setHasCompletedInitialSync] = useState(!REMOTE_SYNC_URL)
   const [syncStatus, setSyncStatus] = useState(() => ({
     type: REMOTE_SYNC_URL ? 'loading' : 'local',
-    message: REMOTE_SYNC_URL ? 'Connecting to shared ledger...' : 'Stored on this device',
+    message: REMOTE_SYNC_URL
+      ? 'Connecting to shared ledger...'
+      : 'Sync is not configured. This device has its own saved expenses.',
   }))
   const latestStateRef = useRef(trackerState)
   const skipNextRemoteSaveRef = useRef(false)
@@ -722,6 +762,43 @@ function App() {
     reader.readAsText(file)
   }
 
+  function handleSyncUrlSave() {
+    const normalizedSyncUrl = normalizeSyncUrl(syncUrlDraft)
+
+    if (!normalizedSyncUrl) {
+      window.alert('Enter a shared ledger URL before saving sync settings.')
+      return
+    }
+
+    window.localStorage.setItem(SYNC_URL_STORAGE_KEY, normalizedSyncUrl)
+    window.location.reload()
+  }
+
+  function handleSyncUrlClear() {
+    window.localStorage.removeItem(SYNC_URL_STORAGE_KEY)
+    window.location.reload()
+  }
+
+  async function handleCopySyncLink() {
+    if (!REMOTE_SYNC_URL) {
+      setSyncCopyStatus('Save a shared ledger URL first.')
+      return
+    }
+
+    const pairingUrl = new URL(window.location.href)
+    SYNC_URL_QUERY_PARAMS.forEach((paramName) => pairingUrl.searchParams.delete(paramName))
+    pairingUrl.searchParams.set('syncUrl', formatSyncUrlForInput(REMOTE_SYNC_URL))
+
+    try {
+      await navigator.clipboard.writeText(pairingUrl.toString())
+      setSyncCopyStatus('Phone setup link copied.')
+    } catch (error) {
+      console.error('Unable to copy sync link.', error)
+      window.prompt('Copy this link to your phone:', pairingUrl.toString())
+      setSyncCopyStatus('Copy the setup link shown above.')
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Workspace navigation">
@@ -1084,6 +1161,35 @@ function App() {
                     onChange={handleImport}
                   />
                 </label>
+              </div>
+
+              <div className="sync-settings">
+                <label>
+                  <span>Shared ledger URL</span>
+                  <input
+                    type="url"
+                    value={syncUrlDraft}
+                    onChange={(event) => {
+                      setSyncUrlDraft(event.target.value)
+                      setSyncCopyStatus('')
+                    }}
+                    placeholder="https://your-database.firebaseio.com/ledgers/main"
+                  />
+                </label>
+                <div className="settings-data-actions" aria-label="Sync controls">
+                  <button className="ghost-button" type="button" onClick={handleSyncUrlSave}>
+                    Save sync
+                  </button>
+                  <button className="ghost-button" type="button" onClick={handleCopySyncLink}>
+                    Copy phone link
+                  </button>
+                  <button className="ghost-button" type="button" onClick={handleSyncUrlClear}>
+                    Clear sync
+                  </button>
+                </div>
+                {syncCopyStatus ? (
+                  <p className="sync-hint">{syncCopyStatus}</p>
+                ) : null}
               </div>
 
               <p className={`sync-status sync-status-${syncStatus.type}`}>
