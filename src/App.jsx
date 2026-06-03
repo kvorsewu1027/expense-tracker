@@ -26,11 +26,12 @@ const CATEGORIES = [
   'Entertainment',
   'Subscription',
   'Others',
-  'Transport',
+  'Eat Out',
 ]
 const CATEGORY_ALIASES = {
   Housing: 'Rent',
   Groceries: 'Grocery',
+  Dining: 'Eat Out',
   Other: 'Others',
 }
 const DEFAULT_CATEGORY = 'Grocery'
@@ -248,6 +249,21 @@ function trackerStateToCsv(state) {
   }
 
   return rows.map((row) => row.map(formatCsvCell).join(',')).join('\r\n')
+}
+
+function getMonthlyExportState(state, month) {
+  const sanitizedState = sanitizeState(state)
+  const monthlyBudgets = {}
+
+  if (sanitizedState.budgetsByMonth[month] !== undefined) {
+    monthlyBudgets[month] = sanitizedState.budgetsByMonth[month]
+  }
+
+  return {
+    expenses: sanitizedState.expenses.filter((expense) => expense.date.startsWith(month)),
+    budgetsByMonth: monthlyBudgets,
+    selectedMonth: month,
+  }
 }
 
 function csvToTrackerState(csvText) {
@@ -615,7 +631,7 @@ function App() {
         return current
       }
 
-      const nextAmount = /[+*x×]$/.test(amount)
+      const nextAmount = /[+\-*xX]$/.test(amount)
         ? `${amount.slice(0, -1)}${operator}`
         : `${amount}${operator}`
 
@@ -720,7 +736,8 @@ function App() {
   }
 
   function handleExport() {
-    const blob = new Blob([trackerStateToCsv(trackerState)], {
+    const monthlyState = getMonthlyExportState(trackerState, selectedMonth)
+    const blob = new Blob([trackerStateToCsv(monthlyState)], {
       type: 'text/csv;charset=utf-8',
     })
     const url = window.URL.createObjectURL(blob)
@@ -856,7 +873,6 @@ function App() {
                   <p className="section-label">{category}</p>
                   <h3>{formatCurrency(amount)}</h3>
                 </div>
-                <span>{categoryExpenses.length} items</span>
               </header>
 
               {categoryExpenses.length ? (
@@ -955,7 +971,17 @@ function App() {
                 onClick={closeExpenseModal}
                 aria-label="Close expense dialog"
               >
-                X
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
               </button>
             </header>
 
@@ -984,7 +1010,7 @@ function App() {
                     inputMode="decimal"
                     value={formState.amount}
                     onChange={handleFormChange}
-                    placeholder="12.50 + 3 * 2"
+                    placeholder="25 - 4.50 + 3 x 2"
                     required
                   />
                   <div className="amount-calculator" aria-label="Amount calculator">
@@ -995,7 +1021,7 @@ function App() {
                           <strong>{formatCurrency(amountCalculation.value)}</strong>
                         </>
                       ) : (
-                        <span>Use + or x to combine amounts</span>
+                        <span>Use +, -, or x to combine amounts</span>
                       )}
                     </div>
                     <div className="calculator-actions">
@@ -1011,11 +1037,20 @@ function App() {
                       <button
                         className="calculator-button"
                         type="button"
-                        onClick={() => handleAmountOperator('×')}
+                        onClick={() => handleAmountOperator('-')}
+                        aria-label="Subtract another amount"
+                        title="Subtract"
+                      >
+                        -
+                      </button>
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={() => handleAmountOperator('x')}
                         aria-label="Multiply by another amount"
                         title="Multiply"
                       >
-                        ×
+                        x
                       </button>
                       <button
                         className="calculator-button"
@@ -1132,7 +1167,17 @@ function App() {
                 onClick={() => setIsSettingsModalOpen(false)}
                 aria-label="Close settings dialog"
               >
-                X
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
               </button>
             </header>
 
@@ -1149,23 +1194,22 @@ function App() {
                 />
               </label>
 
-              <div className="settings-data-actions" aria-label="Data controls">
-                <button className="ghost-button" type="button" onClick={handleExport}>
-                  Export
+              <footer className="modal-actions budget-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => setIsSettingsModalOpen(false)}
+                >
+                  Cancel
                 </button>
-                <label className="ghost-button file-input-label">
-                  Import
-                  <input
-                    type="file"
-                    accept=".csv,.json,text/csv,application/json"
-                    onChange={handleImport}
-                  />
-                </label>
-              </div>
+                <button className="primary-button" type="button" onClick={handleBudgetSave}>
+                  Save budget
+                </button>
+              </footer>
 
               <div className="sync-settings">
                 <label>
-                  <span>Shared ledger URL</span>
+                  <span>Shared Database URL</span>
                   <input
                     type="url"
                     value={syncUrlDraft}
@@ -1196,18 +1240,22 @@ function App() {
                 {syncStatus.message}
               </p>
 
-              <footer className="modal-actions">
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => setIsSettingsModalOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button className="primary-button" type="button" onClick={handleBudgetSave}>
-                  Save budget
-                </button>
-              </footer>
+              <div className="settings-export-import">
+                <h3>Monthly Expense Export/Import</h3>
+                <div className="settings-data-actions" aria-label="Data controls">
+                  <button className="ghost-button" type="button" onClick={handleExport}>
+                    Export
+                  </button>
+                  <label className="ghost-button file-input-label">
+                    Import
+                    <input
+                      type="file"
+                      accept=".csv,.json,text/csv,application/json"
+                      onChange={handleImport}
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
           </section>
         </div>
@@ -1296,7 +1344,7 @@ function formatSyncTime(date) {
 }
 
 function calculateAmountExpression(expression) {
-  const normalizedExpression = expression.trim().replace(/,/g, '.').replace(/[x×]/gi, '*')
+  const normalizedExpression = expression.trim().replace(/,/g, '.').replace(/x/gi, '*')
 
   if (!normalizedExpression) {
     return {
@@ -1305,21 +1353,25 @@ function calculateAmountExpression(expression) {
     }
   }
 
-  if (!/^\d+(?:\.\d+)?(?:\s*[+*]\s*\d+(?:\.\d+)?)*$/.test(normalizedExpression)) {
+  const compactExpression = normalizedExpression.replace(/\s+/g, '')
+
+  if (!/^\d+(?:\.\d+)?(?:[+\-*]\d+(?:\.\d+)?)*$/.test(compactExpression)) {
     return {
       isValid: false,
       value: 0,
     }
   }
 
-  const value = normalizedExpression
-    .split('+')
-    .reduce((sum, additionPart) => {
+  const value = compactExpression
+    .match(/[+-]?[^+-]+/g)
+    .reduce((sum, signedPart) => {
+      const sign = signedPart.startsWith('-') ? -1 : 1
+      const additionPart = signedPart.replace(/^[+-]/, '')
       const product = additionPart
         .split('*')
         .reduce((total, factor) => total * Number(factor.trim()), 1)
 
-      return sum + product
+      return sum + sign * product
     }, 0)
 
   return {
