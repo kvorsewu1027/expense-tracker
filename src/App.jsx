@@ -1,20 +1,41 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 const STORAGE_KEY = 'ledger-bloom-react-state'
-const CATEGORIES = [
-  'Housing',
-  'Groceries',
-  'Transport',
-  'Dining',
-  'Utilities',
-  'Health',
-  'Shopping',
-  'Entertainment',
-  'Travel',
-  'Other',
+const SYNC_URL_STORAGE_KEY = `${STORAGE_KEY}-sync-url`
+const BUILD_SYNC_URL = normalizeSyncUrl(import.meta.env.VITE_LEDGER_SYNC_URL)
+const SYNC_URL_QUERY_PARAMS = ['syncUrl', 'ledgerSyncUrl']
+const REMOTE_SYNC_URL = getInitialRemoteSyncUrl()
+const SYNC_POLL_INTERVAL_MS = 10000
+const CSV_COLUMNS = [
+  'type',
+  'id',
+  'name',
+  'amount',
+  'date',
+  'category',
+  'payment',
+  'note',
+  'month',
+  'budget',
+  'selectedMonth',
 ]
-const PAYMENTS = ['Card', 'Cash', 'Transfer', 'Subscription']
+const CATEGORIES = [
+  'Rent',
+  'Grocery',
+  'Entertainment',
+  'Subscription',
+  'Others',
+  'Eat Out',
+]
+const CATEGORY_ALIASES = {
+  Housing: 'Rent',
+  Groceries: 'Grocery',
+  Dining: 'Eat Out',
+  Other: 'Others',
+}
+const DEFAULT_CATEGORY = 'Grocery'
+const PAYMENTS = ['Card', 'Cash']
 
 const currencyFormatter = new Intl.NumberFormat(undefined, {
   style: 'currency',
@@ -27,7 +48,7 @@ function createDefaultFormState() {
     name: '',
     amount: '',
     date: toDateInputValue(new Date()),
-    category: CATEGORIES[0],
+    category: DEFAULT_CATEGORY,
     payment: PAYMENTS[0],
     note: '',
   }
@@ -63,12 +84,9 @@ function sanitizeState(source) {
           name: typeof expense?.name === 'string' ? expense.name : '',
           amount: roundCurrency(Number(expense?.amount || 0)),
           date: typeof expense?.date === 'string' ? expense.date : '',
-          category:
-            typeof expense?.category === 'string' && expense.category
-              ? expense.category
-              : 'Other',
+          category: normalizeCategory(expense?.category),
           payment:
-            typeof expense?.payment === 'string' && expense.payment
+            typeof expense?.payment === 'string' && PAYMENTS.includes(expense.payment)
               ? expense.payment
               : PAYMENTS[0],
           note: typeof expense?.note === 'string' ? expense.note : '',
@@ -106,10 +124,296 @@ function sanitizeState(source) {
   }
 }
 
+function normalizeSyncUrl(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const trimmedValue = value.trim()
+  if (!trimmedValue) {
+    return ''
+  }
+
+  return trimmedValue.endsWith('.json') ? trimmedValue : `${trimmedValue}.json`
+}
+
+function getInitialRemoteSyncUrl() {
+  if (typeof window === 'undefined') {
+    return BUILD_SYNC_URL
+  }
+
+  try {
+    const pageUrl = new URL(window.location.href)
+    const sharedSyncUrl = SYNC_URL_QUERY_PARAMS.map((paramName) =>
+      normalizeSyncUrl(pageUrl.searchParams.get(paramName))
+    ).find(Boolean)
+
+    if (sharedSyncUrl) {
+      window.localStorage.setItem(SYNC_URL_STORAGE_KEY, sharedSyncUrl)
+      SYNC_URL_QUERY_PARAMS.forEach((paramName) => pageUrl.searchParams.delete(paramName))
+      window.history.replaceState(
+        null,
+        '',
+        `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`
+      )
+      return sharedSyncUrl
+    }
+
+    return normalizeSyncUrl(window.localStorage.getItem(SYNC_URL_STORAGE_KEY)) || BUILD_SYNC_URL
+  } catch (error) {
+    console.error('Unable to read shared ledger configuration.', error)
+    return BUILD_SYNC_URL
+  }
+}
+
+function formatSyncUrlForInput(syncUrl) {
+  return syncUrl.endsWith('.json') ? syncUrl.slice(0, -5) : syncUrl
+}
+
+async function fetchSharedLedger() {
+  const response = await fetch(REMOTE_SYNC_URL, {
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Shared ledger load failed with ${response.status}`)
+  }
+
+  const payload = await response.json()
+  if (!payload) {
+    return null
+  }
+
+  return sanitizeState(payload.state || payload)
+}
+
+async function saveSharedLedger(state) {
+  const response = await fetch(REMOTE_SYNC_URL, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      savedAt: new Date().toISOString(),
+      state: sanitizeState(state),
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Shared ledger save failed with ${response.status}`)
+  }
+}
+
+function statesAreEqual(left, right) {
+  return JSON.stringify(sanitizeState(left)) === JSON.stringify(sanitizeState(right))
+}
+
+function trackerStateToCsv(state) {
+  const sanitizedState = sanitizeState(state)
+  const rows = [CSV_COLUMNS]
+
+  sanitizedState.expenses.forEach((expense) => {
+    rows.push([
+      'expense',
+      expense.id,
+      expense.name,
+      String(expense.amount),
+      expense.date,
+      expense.category,
+      expense.payment,
+      expense.note,
+      '',
+      '',
+      sanitizedState.selectedMonth,
+    ])
+  })
+
+  Object.entries(sanitizedState.budgetsByMonth).forEach(([month, budget]) => {
+    rows.push([
+      'budget',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      month,
+      String(budget),
+      sanitizedState.selectedMonth,
+    ])
+  })
+
+  if (rows.length === 1) {
+    rows.push(['meta', '', '', '', '', '', '', '', '', '', sanitizedState.selectedMonth])
+  }
+
+  return rows.map((row) => row.map(formatCsvCell).join(',')).join('\r\n')
+}
+
+function getMonthlyExportState(state, month) {
+  const sanitizedState = sanitizeState(state)
+  const monthlyBudgets = {}
+
+  if (sanitizedState.budgetsByMonth[month] !== undefined) {
+    monthlyBudgets[month] = sanitizedState.budgetsByMonth[month]
+  }
+
+  return {
+    expenses: sanitizedState.expenses.filter((expense) => expense.date.startsWith(month)),
+    budgetsByMonth: monthlyBudgets,
+    selectedMonth: month,
+  }
+}
+
+function csvToTrackerState(csvText) {
+  const rows = parseCsvRows(csvText)
+  if (rows.length < 2) {
+    throw new Error('CSV has no importable rows')
+  }
+
+  const headers = rows[0].map((header) => normalizeCsvHeader(header))
+  const records = rows.slice(1).map((row) =>
+    Object.fromEntries(headers.map((header, index) => [header, row[index] || '']))
+  )
+  const expenses = []
+  const budgetsByMonth = {}
+  let selectedMonth = ''
+
+  records.forEach((record) => {
+    const recordType = normalizeCsvHeader(record.type)
+    const rowSelectedMonth = record.selectedmonth || record.selected_month
+    if (!selectedMonth && /^\d{4}-\d{2}$/.test(rowSelectedMonth)) {
+      selectedMonth = rowSelectedMonth
+    }
+
+    if (!recordType || recordType === 'expense') {
+      expenses.push({
+        id: record.id || crypto.randomUUID(),
+        name: record.name || record.expense || record.description,
+        amount: record.amount,
+        date: record.date,
+        category: record.category,
+        payment: record.payment || record.paymentmethod || record.payment_method,
+        note: record.note || record.notes,
+      })
+      return
+    }
+
+    if (recordType === 'budget') {
+      const month = record.month || rowSelectedMonth
+      const budget = Number(record.budget || record.amount)
+      if (/^\d{4}-\d{2}$/.test(month) && Number.isFinite(budget) && budget >= 0) {
+        budgetsByMonth[month] = roundCurrency(budget)
+      }
+    }
+  })
+
+  const firstExpenseMonth = expenses.find((expense) => /^\d{4}-\d{2}/.test(expense.date))?.date.slice(0, 7)
+  const firstBudgetMonth = Object.keys(budgetsByMonth)[0]
+
+  return sanitizeState({
+    expenses,
+    budgetsByMonth,
+    selectedMonth: selectedMonth || firstExpenseMonth || firstBudgetMonth || toMonthKey(new Date()),
+  })
+}
+
+function importTextToTrackerState(importText, fileName = '') {
+  const trimmedText = importText.trim()
+  const lowerFileName = fileName.toLowerCase()
+
+  if (lowerFileName.endsWith('.json') || trimmedText.startsWith('{')) {
+    return sanitizeState(JSON.parse(trimmedText || '{}'))
+  }
+
+  return csvToTrackerState(importText)
+}
+
+function parseCsvRows(csvText) {
+  const rows = []
+  let currentRow = []
+  let currentCell = ''
+  let isInsideQuotedCell = false
+
+  for (let index = 0; index < csvText.length; index += 1) {
+    const character = csvText[index]
+    const nextCharacter = csvText[index + 1]
+
+    if (character === '"') {
+      if (isInsideQuotedCell && nextCharacter === '"') {
+        currentCell += '"'
+        index += 1
+      } else {
+        isInsideQuotedCell = !isInsideQuotedCell
+      }
+      continue
+    }
+
+    if (character === ',' && !isInsideQuotedCell) {
+      currentRow.push(currentCell)
+      currentCell = ''
+      continue
+    }
+
+    if ((character === '\n' || character === '\r') && !isInsideQuotedCell) {
+      if (character === '\r' && nextCharacter === '\n') {
+        index += 1
+      }
+      currentRow.push(currentCell)
+      if (currentRow.some((cell) => cell.trim())) {
+        rows.push(currentRow)
+      }
+      currentRow = []
+      currentCell = ''
+      continue
+    }
+
+    currentCell += character
+  }
+
+  currentRow.push(currentCell)
+  if (currentRow.some((cell) => cell.trim())) {
+    rows.push(currentRow)
+  }
+
+  return rows
+}
+
+function formatCsvCell(value) {
+  const textValue = String(value ?? '')
+  if (/[",\r\n]/.test(textValue)) {
+    return `"${textValue.replace(/"/g, '""')}"`
+  }
+
+  return textValue
+}
+
+function normalizeCsvHeader(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^\uFEFF/, '')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+}
+
 function App() {
   const [trackerState, setTrackerState] = useState(loadInitialState)
   const [formState, setFormState] = useState(createDefaultFormState)
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false)
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+  const [editingExpenseId, setEditingExpenseId] = useState(null)
+  const [syncUrlDraft, setSyncUrlDraft] = useState(() => formatSyncUrlForInput(REMOTE_SYNC_URL))
+  const [syncCopyStatus, setSyncCopyStatus] = useState('')
+  const [hasCompletedInitialSync, setHasCompletedInitialSync] = useState(!REMOTE_SYNC_URL)
+  const [syncStatus, setSyncStatus] = useState(() => ({
+    type: REMOTE_SYNC_URL ? 'loading' : 'local',
+    message: REMOTE_SYNC_URL
+      ? 'Connecting to shared ledger...'
+      : 'Sync is not configured. This device has its own saved expenses.',
+  }))
+  const latestStateRef = useRef(trackerState)
+  const skipNextRemoteSaveRef = useRef(false)
 
   const { expenses, budgetsByMonth, selectedMonth } = trackerState
   const [budgetDraft, setBudgetDraft] = useState(() =>
@@ -120,19 +424,136 @@ function App() {
     .sort((left, right) => right.date.localeCompare(left.date))
   const totalSpent = sumExpenses(expensesForMonth)
   const groupedCategories = getCategoryGroups(expensesForMonth)
-  const transactionCount = expensesForMonth.length
   const budget = Number(budgetsByMonth[selectedMonth] ?? 0)
-  const budgetProgress = budget ? Math.min((totalSpent / budget) * 100, 100) : 0
-  const budgetDifference = roundCurrency(budget - totalSpent)
+  const budgetLeft = roundCurrency(budget - totalSpent)
+  const amountCalculation = calculateAmountExpression(formState.amount)
 
   useEffect(() => {
+    latestStateRef.current = trackerState
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trackerState))
   }, [trackerState])
 
   useEffect(() => {
+    if (!REMOTE_SYNC_URL) {
+      return undefined
+    }
+
+    let isCancelled = false
+
+    async function loadSharedLedger() {
+      try {
+        const sharedState = await fetchSharedLedger()
+
+        if (isCancelled) {
+          return
+        }
+
+        if (sharedState) {
+          skipNextRemoteSaveRef.current = true
+          setTrackerState(sharedState)
+          setSyncStatus({
+            type: 'synced',
+            message: `Shared ledger loaded ${formatSyncTime(new Date())}`,
+          })
+        } else {
+          await saveSharedLedger(latestStateRef.current)
+          if (!isCancelled) {
+            setSyncStatus({
+              type: 'synced',
+              message: `Shared ledger created ${formatSyncTime(new Date())}`,
+            })
+          }
+        }
+
+        if (!isCancelled) {
+          setHasCompletedInitialSync(true)
+        }
+      } catch (error) {
+        console.error('Unable to load shared ledger.', error)
+        if (!isCancelled) {
+          setSyncStatus({
+            type: 'error',
+            message: 'Shared ledger unavailable. Changes are saved on this device.',
+          })
+        }
+      }
+    }
+
+    loadSharedLedger()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync) {
+      return undefined
+    }
+
+    if (skipNextRemoteSaveRef.current) {
+      skipNextRemoteSaveRef.current = false
+      return undefined
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setSyncStatus({
+          type: 'saving',
+          message: 'Saving to shared ledger...',
+        })
+        await saveSharedLedger(trackerState)
+        setSyncStatus({
+          type: 'synced',
+          message: `Shared ledger saved ${formatSyncTime(new Date())}`,
+        })
+      } catch (error) {
+        console.error('Unable to save shared ledger.', error)
+        setSyncStatus({
+          type: 'error',
+          message: 'Shared save failed. This device still has your latest changes.',
+        })
+      }
+    }, 450)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [trackerState, hasCompletedInitialSync])
+
+  useEffect(() => {
+    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync) {
+      return undefined
+    }
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const sharedState = await fetchSharedLedger()
+        if (!sharedState || statesAreEqual(sharedState, latestStateRef.current)) {
+          return
+        }
+
+        skipNextRemoteSaveRef.current = true
+        setTrackerState(sharedState)
+        setSyncStatus({
+          type: 'synced',
+          message: `Shared ledger refreshed ${formatSyncTime(new Date())}`,
+        })
+      } catch (error) {
+        console.error('Unable to refresh shared ledger.', error)
+        setSyncStatus({
+          type: 'error',
+          message: 'Shared refresh failed. Retrying automatically.',
+        })
+      }
+    }, SYNC_POLL_INTERVAL_MS)
+
+    return () => window.clearInterval(intervalId)
+  }, [hasCompletedInitialSync])
+
+  useEffect(() => {
     function handleKeyDown(event) {
       if (event.key === 'Escape') {
-        setIsExpenseModalOpen(false)
+        closeExpenseModal()
+        setIsSettingsModalOpen(false)
       }
     }
 
@@ -151,10 +572,11 @@ function App() {
   function handleSubmit(event) {
     event.preventDefault()
 
+    const resolvedAmount = calculateAmountExpression(formState.amount)
     const nextExpense = {
       id: crypto.randomUUID(),
       name: formState.name.trim(),
-      amount: Number(formState.amount),
+      amount: resolvedAmount.isValid ? resolvedAmount.value : Number.NaN,
       date: formState.date,
       category: formState.category,
       payment: formState.payment,
@@ -172,16 +594,70 @@ function App() {
 
     const nextMonth = nextExpense.date.slice(0, 7)
 
-    setTrackerState((current) => ({
-      ...current,
-      expenses: [nextExpense, ...current.expenses],
-      selectedMonth: nextMonth,
-    }))
+    setTrackerState((current) => {
+      if (editingExpenseId) {
+        return {
+          ...current,
+          expenses: current.expenses.map((expense) =>
+            expense.id === editingExpenseId
+              ? {
+                  ...nextExpense,
+                  id: editingExpenseId,
+                }
+              : expense
+          ),
+          selectedMonth: nextMonth,
+        }
+      }
+
+      return {
+        ...current,
+        expenses: [nextExpense, ...current.expenses],
+        selectedMonth: nextMonth,
+      }
+    })
     setBudgetDraft(
       budgetsByMonth[nextMonth] !== undefined ? String(budgetsByMonth[nextMonth]) : ''
     )
     setFormState(createDefaultFormState())
+    setEditingExpenseId(null)
     setIsExpenseModalOpen(false)
+  }
+
+  function handleAmountOperator(operator) {
+    setFormState((current) => {
+      const amount = current.amount.trimEnd()
+      if (!amount) {
+        return current
+      }
+
+      const nextAmount = /[+\-*xX]$/.test(amount)
+        ? `${amount.slice(0, -1)}${operator}`
+        : `${amount}${operator}`
+
+      return {
+        ...current,
+        amount: nextAmount,
+      }
+    })
+  }
+
+  function handleAmountApply() {
+    if (!amountCalculation.isValid) {
+      return
+    }
+
+    setFormState((current) => ({
+      ...current,
+      amount: String(amountCalculation.value),
+    }))
+  }
+
+  function handleAmountClear() {
+    setFormState((current) => ({
+      ...current,
+      amount: '',
+    }))
   }
 
   function handleMonthChange(event) {
@@ -217,6 +693,14 @@ function App() {
         budgetsByMonth: nextBudgets,
       }
     })
+    setIsSettingsModalOpen(false)
+  }
+
+  function openSettingsModal() {
+    setBudgetDraft(
+      budgetsByMonth[selectedMonth] !== undefined ? String(budgetsByMonth[selectedMonth]) : ''
+    )
+    setIsSettingsModalOpen(true)
   }
 
   function handleDelete(expenseId) {
@@ -226,14 +710,40 @@ function App() {
     }))
   }
 
+  function openNewExpenseModal() {
+    setEditingExpenseId(null)
+    setFormState(createDefaultFormState())
+    setIsExpenseModalOpen(true)
+  }
+
+  function openEditExpenseModal(expense) {
+    setEditingExpenseId(expense.id)
+    setFormState({
+      name: expense.name,
+      amount: String(expense.amount),
+      date: expense.date,
+      category: expense.category,
+      payment: expense.payment,
+      note: expense.note,
+    })
+    setIsExpenseModalOpen(true)
+  }
+
+  function closeExpenseModal() {
+    setEditingExpenseId(null)
+    setFormState(createDefaultFormState())
+    setIsExpenseModalOpen(false)
+  }
+
   function handleExport() {
-    const blob = new Blob([JSON.stringify(trackerState, null, 2)], {
-      type: 'application/json',
+    const monthlyState = getMonthlyExportState(trackerState, selectedMonth)
+    const blob = new Blob([trackerStateToCsv(monthlyState)], {
+      type: 'text/csv;charset=utf-8',
     })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `ledger-bloom-${selectedMonth}.json`
+    link.download = `chu-liang-expense-tracker-${selectedMonth}.csv`
     link.click()
     window.URL.revokeObjectURL(url)
   }
@@ -247,7 +757,10 @@ function App() {
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        const importedState = sanitizeState(JSON.parse(String(reader.result || '{}')))
+        const importedState = importTextToTrackerState(
+          String(reader.result || ''),
+          file.name
+        )
         setTrackerState(importedState)
         setBudgetDraft(
           importedState.budgetsByMonth[importedState.selectedMonth] !== undefined
@@ -257,7 +770,7 @@ function App() {
       } catch (error) {
         console.error('Unable to import file.', error)
         window.alert(
-          'That file could not be imported. Please choose a valid Ledger Bloom JSON export.'
+          "That file could not be imported. Please choose a valid Chu & Liang's Expense Tracker CSV or JSON export."
         )
       } finally {
         event.target.value = ''
@@ -266,14 +779,50 @@ function App() {
     reader.readAsText(file)
   }
 
+  function handleSyncUrlSave() {
+    const normalizedSyncUrl = normalizeSyncUrl(syncUrlDraft)
+
+    if (!normalizedSyncUrl) {
+      window.alert('Enter a shared ledger URL before saving sync settings.')
+      return
+    }
+
+    window.localStorage.setItem(SYNC_URL_STORAGE_KEY, normalizedSyncUrl)
+    window.location.reload()
+  }
+
+  function handleSyncUrlClear() {
+    window.localStorage.removeItem(SYNC_URL_STORAGE_KEY)
+    window.location.reload()
+  }
+
+  async function handleCopySyncLink() {
+    if (!REMOTE_SYNC_URL) {
+      setSyncCopyStatus('Save a shared ledger URL first.')
+      return
+    }
+
+    const pairingUrl = new URL(window.location.href)
+    SYNC_URL_QUERY_PARAMS.forEach((paramName) => pairingUrl.searchParams.delete(paramName))
+    pairingUrl.searchParams.set('syncUrl', formatSyncUrlForInput(REMOTE_SYNC_URL))
+
+    try {
+      await navigator.clipboard.writeText(pairingUrl.toString())
+      setSyncCopyStatus('Phone setup link copied.')
+    } catch (error) {
+      console.error('Unable to copy sync link.', error)
+      window.prompt('Copy this link to your phone:', pairingUrl.toString())
+      setSyncCopyStatus('Copy the setup link shown above.')
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Workspace navigation">
         <div className="brand-block">
-          <span className="brand-mark">LB</span>
+          <span className="brand-mark">CL</span>
           <div>
-            <p className="workspace-label">Workspace</p>
-            <h1>Ledger Bloom</h1>
+            <h1>Chu & Liang's Expense Tracker</h1>
           </div>
         </div>
 
@@ -290,8 +839,7 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="breadcrumb">Expenses / {formatMonthLabel(selectedMonth)}</p>
-            <h2>Monthly expense board</h2>
+            <h2>Expense Board of {formatMonthLabel(selectedMonth)}</h2>
           </div>
 
           <div className="topbar-actions">
@@ -299,10 +847,13 @@ function App() {
               <span>Month</span>
               <input type="month" value={selectedMonth} onChange={handleMonthChange} />
             </label>
+            <button className="secondary-button" type="button" onClick={openSettingsModal}>
+              Settings
+            </button>
             <button
               className="primary-button"
               type="button"
-              onClick={() => setIsExpenseModalOpen(true)}
+              onClick={openNewExpenseModal}
             >
               New expense
             </button>
@@ -311,56 +862,7 @@ function App() {
 
         <section className="metrics-row" aria-label="Monthly summary">
           <SummaryCard label="Total spent" value={formatCurrency(totalSpent)} />
-          <SummaryCard label="Transactions" value={String(transactionCount)} />
-          <SummaryCard
-            label="Budget"
-            value={budget ? formatCurrency(budget) : 'Not set'}
-            detail={
-              budget
-                ? budgetDifference >= 0
-                  ? `${formatCurrency(budgetDifference)} left`
-                  : `${formatCurrency(Math.abs(budgetDifference))} over`
-                : 'Add one below'
-            }
-          />
-        </section>
-
-        <section className="controls-strip" aria-label="Budget and data controls">
-          <div className="budget-control">
-            <label>
-              <span>Monthly budget</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={budgetDraft}
-                onChange={(event) => setBudgetDraft(event.target.value)}
-                placeholder="0.00"
-              />
-            </label>
-            <button className="secondary-button" type="button" onClick={handleBudgetSave}>
-              Save
-            </button>
-          </div>
-
-          <div className="budget-track" aria-label="Budget usage">
-            <div className="budget-bar">
-              <div
-                className="budget-progress"
-                style={{ width: `${budgetProgress}%` }}
-              />
-            </div>
-          </div>
-
-          <div className="data-actions">
-            <button className="ghost-button" type="button" onClick={handleExport}>
-              Export
-            </button>
-            <label className="ghost-button file-input-label">
-              Import
-              <input type="file" accept="application/json" onChange={handleImport} />
-            </label>
-          </div>
+          <SummaryCard label="Budget left" value={budget ? formatCurrency(budgetLeft) : 'Not set'} />
         </section>
 
         <section className="category-board" aria-label="Expenses by category">
@@ -371,7 +873,6 @@ function App() {
                   <p className="section-label">{category}</p>
                   <h3>{formatCurrency(amount)}</h3>
                 </div>
-                <span>{categoryExpenses.length} items</span>
               </header>
 
               {categoryExpenses.length ? (
@@ -381,39 +882,67 @@ function App() {
                     <span>Date</span>
                     <span>Payment</span>
                     <span>Amount</span>
-                    <span aria-label="Actions" />
+                    <span>Actions</span>
                   </div>
                   {categoryExpenses.map((expense) => (
                     <div className="expense-row" role="row" key={expense.id}>
-                      <span>
+                      <span className="expense-name" data-label="Name">
                         <strong>{expense.name}</strong>
                         {expense.note ? <small>{expense.note}</small> : null}
                       </span>
-                      <span>{formatDate(expense.date)}</span>
-                      <span>{expense.payment}</span>
-                      <span>{formatCurrency(expense.amount)}</span>
-                      <button
-                        className="delete-button"
-                        type="button"
-                        onClick={() => handleDelete(expense.id)}
-                        aria-label={`Delete ${expense.name}`}
-                      >
-                        Delete
-                      </button>
+                      <span data-label="Date">{formatDate(expense.date)}</span>
+                      <span data-label="Payment">{expense.payment}</span>
+                      <span data-label="Amount">{formatCurrency(expense.amount)}</span>
+                      <div className="expense-actions" data-label="Actions">
+                        <button
+                          className="ghost-button icon-action-button"
+                          type="button"
+                          onClick={() => openEditExpenseModal(expense)}
+                          aria-label={`Edit ${expense.name}`}
+                          title="Edit"
+                        >
+                          <svg
+                            aria-hidden="true"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                          </svg>
+                        </button>
+                        <button
+                          className="delete-button icon-action-button"
+                          type="button"
+                          onClick={() => handleDelete(expense.id)}
+                          aria-label={`Delete ${expense.name}`}
+                          title="Delete"
+                        >
+                          <svg
+                            aria-hidden="true"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M3 6h18" />
+                            <path d="M8 6V4h8v2" />
+                            <path d="M19 6l-1 14H6L5 6" />
+                            <path d="M10 11v5" />
+                            <path d="M14 11v5" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <button
-                  className="empty-category"
-                  type="button"
-                  onClick={() => {
-                    setFormState((current) => ({ ...current, category }))
-                    setIsExpenseModalOpen(true)
-                  }}
-                >
-                  Add a {category.toLowerCase()} expense
-                </button>
+                <p className="empty-category">No expenses yet</p>
               )}
             </article>
           ))}
@@ -421,7 +950,7 @@ function App() {
       </main>
 
       {isExpenseModalOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsExpenseModalOpen(false)}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeExpenseModal}>
           <section
             className="expense-modal"
             role="dialog"
@@ -431,16 +960,28 @@ function App() {
           >
             <header className="modal-header">
               <div>
-                <p className="section-label">New record</p>
-                <h2 id="expense-modal-title">Add expense</h2>
+                <p className="section-label">{editingExpenseId ? 'Edit record' : 'New record'}</p>
+                <h2 id="expense-modal-title">
+                  {editingExpenseId ? 'Edit expense' : 'Add expense'}
+                </h2>
               </div>
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => setIsExpenseModalOpen(false)}
-                aria-label="Close add expense dialog"
+                onClick={closeExpenseModal}
+                aria-label="Close expense dialog"
               >
-                X
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
               </button>
             </header>
 
@@ -458,19 +999,81 @@ function App() {
               </label>
 
               <div className="field-row">
-                <label>
-                  <span>Amount</span>
+                <div className="amount-field">
+                  <label htmlFor="expense-amount">
+                    <span>Amount</span>
+                  </label>
                   <input
+                    id="expense-amount"
                     name="amount"
-                    type="number"
-                    min="0.01"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={formState.amount}
                     onChange={handleFormChange}
-                    placeholder="0.00"
+                    placeholder="25 - 4.50 + 3 x 2"
                     required
                   />
-                </label>
+                  <div className="amount-calculator" aria-label="Amount calculator">
+                    <div className="amount-result" aria-live="polite">
+                      {amountCalculation.isValid && formState.amount.trim() ? (
+                        <>
+                          <span>Result</span>
+                          <strong>{formatCurrency(amountCalculation.value)}</strong>
+                        </>
+                      ) : (
+                        <span>Use +, -, or x to combine amounts</span>
+                      )}
+                    </div>
+                    <div className="calculator-actions">
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={() => handleAmountOperator('+')}
+                        aria-label="Add another amount"
+                        title="Add"
+                      >
+                        +
+                      </button>
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={() => handleAmountOperator('-')}
+                        aria-label="Subtract another amount"
+                        title="Subtract"
+                      >
+                        -
+                      </button>
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={() => handleAmountOperator('x')}
+                        aria-label="Multiply by another amount"
+                        title="Multiply"
+                      >
+                        x
+                      </button>
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={handleAmountApply}
+                        disabled={!amountCalculation.isValid || !formState.amount.trim()}
+                        aria-label="Use calculated amount"
+                        title="Use result"
+                      >
+                        =
+                      </button>
+                      <button
+                        className="calculator-button"
+                        type="button"
+                        onClick={handleAmountClear}
+                        aria-label="Clear amount"
+                        title="Clear"
+                      >
+                        C
+                      </button>
+                    </div>
+                  </div>
+                </div>
 
                 <label>
                   <span>Date</span>
@@ -531,15 +1134,129 @@ function App() {
                 <button
                   className="ghost-button"
                   type="button"
-                  onClick={() => setIsExpenseModalOpen(false)}
+                  onClick={closeExpenseModal}
                 >
                   Cancel
                 </button>
                 <button className="primary-button" type="submit">
-                  Add expense
+                  {editingExpenseId ? 'Save changes' : 'Add expense'}
                 </button>
               </footer>
             </form>
+          </section>
+        </div>
+      ) : null}
+
+      {isSettingsModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsSettingsModalOpen(false)}>
+          <section
+            className="expense-modal settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header">
+              <div>
+                <p className="section-label">Settings</p>
+                <h2 id="settings-modal-title">Monthly budget</h2>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setIsSettingsModalOpen(false)}
+                aria-label="Close settings dialog"
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
+              </button>
+            </header>
+
+            <div className="settings-form">
+              <label>
+                <span>Budget for {formatMonthLabel(selectedMonth)}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={budgetDraft}
+                  onChange={(event) => setBudgetDraft(event.target.value)}
+                  placeholder="0.00"
+                />
+              </label>
+
+              <footer className="modal-actions budget-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => setIsSettingsModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button className="primary-button" type="button" onClick={handleBudgetSave}>
+                  Save budget
+                </button>
+              </footer>
+
+              <div className="sync-settings">
+                <label>
+                  <span>Shared Database URL</span>
+                  <input
+                    type="url"
+                    value={syncUrlDraft}
+                    onChange={(event) => {
+                      setSyncUrlDraft(event.target.value)
+                      setSyncCopyStatus('')
+                    }}
+                    placeholder="https://your-database.firebaseio.com/ledgers/main"
+                  />
+                </label>
+                <div className="settings-data-actions" aria-label="Sync controls">
+                  <button className="ghost-button" type="button" onClick={handleSyncUrlSave}>
+                    Save sync
+                  </button>
+                  <button className="ghost-button" type="button" onClick={handleCopySyncLink}>
+                    Copy phone link
+                  </button>
+                  <button className="ghost-button" type="button" onClick={handleSyncUrlClear}>
+                    Clear sync
+                  </button>
+                </div>
+                {syncCopyStatus ? (
+                  <p className="sync-hint">{syncCopyStatus}</p>
+                ) : null}
+              </div>
+
+              <p className={`sync-status sync-status-${syncStatus.type}`}>
+                {syncStatus.message}
+              </p>
+
+              <div className="settings-export-import">
+                <h3>Monthly Expense Export/Import</h3>
+                <div className="settings-data-actions" aria-label="Data controls">
+                  <button className="ghost-button" type="button" onClick={handleExport}>
+                    Export
+                  </button>
+                  <label className="ghost-button file-input-label">
+                    Import
+                    <input
+                      type="file"
+                      accept=".csv,.json,text/csv,application/json"
+                      onChange={handleImport}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       ) : null}
@@ -567,6 +1284,15 @@ function getCategoryGroups(expenses) {
       amount: sumExpenses(categoryExpenses),
     }
   })
+}
+
+function normalizeCategory(category) {
+  if (typeof category !== 'string' || !category) {
+    return 'Others'
+  }
+
+  const normalizedCategory = CATEGORY_ALIASES[category] || category
+  return CATEGORIES.includes(normalizedCategory) ? normalizedCategory : 'Others'
 }
 
 function sumExpenses(expenses) {
@@ -608,6 +1334,50 @@ function formatMonthLabel(monthKey) {
     month: 'long',
     year: 'numeric',
   }).format(date)
+}
+
+function formatSyncTime(date) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function calculateAmountExpression(expression) {
+  const normalizedExpression = expression.trim().replace(/,/g, '.').replace(/x/gi, '*')
+
+  if (!normalizedExpression) {
+    return {
+      isValid: false,
+      value: 0,
+    }
+  }
+
+  const compactExpression = normalizedExpression.replace(/\s+/g, '')
+
+  if (!/^\d+(?:\.\d+)?(?:[+\-*]\d+(?:\.\d+)?)*$/.test(compactExpression)) {
+    return {
+      isValid: false,
+      value: 0,
+    }
+  }
+
+  const value = compactExpression
+    .match(/[+-]?[^+-]+/g)
+    .reduce((sum, signedPart) => {
+      const sign = signedPart.startsWith('-') ? -1 : 1
+      const additionPart = signedPart.replace(/^[+-]/, '')
+      const product = additionPart
+        .split('*')
+        .reduce((total, factor) => total * Number(factor.trim()), 1)
+
+      return sum + sign * product
+    }, 0)
+
+  return {
+    isValid: Number.isFinite(value),
+    value: roundCurrency(value),
+  }
 }
 
 function roundCurrency(value) {
