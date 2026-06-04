@@ -19,6 +19,15 @@ Chu & Liang's Expense Tracker is a monthly expense tracker rewritten in React wi
 - `npm run build`
 - `npm run preview`
 
+## Phone app install
+
+The app is configured as a Progressive Web App, so the same deployed website can be installed on a phone without Xcode or an app store.
+
+- Android: open the deployed app in Chrome and choose "Install app" or "Add to Home screen".
+- iPhone: open the deployed app in Safari, choose Share, then choose "Add to Home Screen".
+
+The PWA uses the custom app icons in `public/icons`.
+
 ## Git setup
 
 The project includes `.gitignore` and `.gitattributes` so it is ready for version control.
