@@ -718,6 +718,19 @@
     width: 100%;
   }
 
+  .month-picker input[type='month'] {
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    max-width: 100%;
+    text-align: center;
+  }
+
+  .month-picker input[type='month']::-webkit-date-and-time-value {
+    min-width: 0;
+    text-align: center;
+  }
+
   .expense-breakdown-visual {
     display: grid;
     grid-template-columns: 1fr;
