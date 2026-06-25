@@ -28,6 +28,14 @@ const CATEGORIES = [
   'Others',
   'Eat Out',
 ]
+const CATEGORY_COLORS = {
+  Rent: '#2f6f5e',
+  Grocery: '#ba7c2f',
+  Entertainment: '#3b5fa8',
+  Subscription: '#8b5d9a',
+  Others: '#6f7378',
+  'Eat Out': '#b64f4f',
+}
 const CATEGORY_ALIASES = {
   Housing: 'Rent',
   Groceries: 'Grocery',
@@ -818,23 +826,14 @@ function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar" aria-label="Workspace navigation">
+      <header className="app-header">
         <div className="brand-block">
           <span className="brand-mark">CL</span>
           <div>
             <h1>Chu & Liang's Expense Tracker</h1>
           </div>
         </div>
-
-        <nav className="category-nav" aria-label="Expense categories">
-          {groupedCategories.map(({ category, amount, count }) => (
-            <a href={`#${toAnchorId(category)}`} key={category}>
-              <span>{category}</span>
-              <strong>{count ? formatCurrency(amount) : '-'}</strong>
-            </a>
-          ))}
-        </nav>
-      </aside>
+      </header>
 
       <main className="workspace">
         <header className="topbar">
@@ -859,6 +858,12 @@ function App() {
             </button>
           </div>
         </header>
+
+        <ExpensePieChart
+          groups={groupedCategories}
+          monthLabel={formatMonthLabel(selectedMonth)}
+          total={totalSpent}
+        />
 
         <section className="metrics-row" aria-label="Monthly summary">
           <SummaryCard label="Total spent" value={formatCurrency(totalSpent)} />
@@ -1274,6 +1279,75 @@ function SummaryCard({ label, value, detail }) {
   )
 }
 
+function ExpensePieChart({ groups, monthLabel, total }) {
+  const chartGroups = groups.filter((group) => group.amount > 0)
+  const chartBackground = chartGroups.length
+    ? `conic-gradient(${getPieGradientStops(chartGroups, total).join(', ')})`
+    : undefined
+
+  return (
+    <section className="expense-chart-panel" aria-labelledby="expense-chart-title">
+      <h3 id="expense-chart-title">Expense Breakdown</h3>
+
+      {chartGroups.length ? (
+        <div
+          className="expense-breakdown-visual"
+          role="img"
+          aria-label={`Expense category percentage breakdown for ${monthLabel}`}
+        >
+          <div
+            className="expense-pie"
+            style={chartBackground ? { background: chartBackground } : undefined}
+          />
+
+          <div className="breakdown-list" aria-label="Expense category percentages">
+            {chartGroups.map((group) => (
+              <a
+                className="breakdown-list-item"
+                href={`#${toAnchorId(group.category)}`}
+                key={group.category}
+              >
+                <span
+                  className="breakdown-swatch"
+                  style={{ background: CATEGORY_COLORS[group.category] }}
+                  aria-hidden="true"
+                />
+                <div className="breakdown-list-copy">
+                  <span>{group.category}</span>
+                  <strong style={{ color: CATEGORY_COLORS[group.category] }}>
+                    {formatPercentage(group.amount / total)}
+                  </strong>
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="expense-breakdown-empty">
+          <div className="expense-pie expense-pie-empty" aria-hidden="true" />
+          <p>Add an expense to see the monthly chart.</p>
+        </div>
+        )}
+    </section>
+  )
+}
+
+function getPieGradientStops(groups, total) {
+  let usedPercent = 0
+
+  return groups.map((group, index) => {
+    const startPercent = usedPercent
+    const endPercent =
+      index === groups.length - 1
+        ? 100
+        : roundCurrency(startPercent + (group.amount / total) * 100)
+
+    usedPercent = endPercent
+
+    return `${CATEGORY_COLORS[group.category]} ${startPercent}% ${endPercent}%`
+  })
+}
+
 function getCategoryGroups(expenses) {
   return CATEGORIES.map((category) => {
     const categoryExpenses = expenses.filter((expense) => expense.category === category)
@@ -1318,6 +1392,13 @@ function toDateInputValue(date) {
 
 function formatCurrency(value) {
   return currencyFormatter.format(roundCurrency(value))
+}
+
+function formatPercentage(value) {
+  return new Intl.NumberFormat(undefined, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+  }).format(value)
 }
 
 function formatDate(dateString) {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Expense Tracker Release"
+  short_description: "Commit, PR, deploy, and merge this app"
+  default_prompt: "Use $expense-tracker-release to commit current changes, open a commented PR, deploy GitHub Pages, or merge the release PR."
