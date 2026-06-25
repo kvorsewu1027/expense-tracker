@@ -28,6 +28,14 @@ const CATEGORIES = [
   'Others',
   'Eat Out',
 ]
+const CATEGORY_COLORS = {
+  Rent: '#2f6f5e',
+  Grocery: '#ba7c2f',
+  Entertainment: '#3b5fa8',
+  Subscription: '#8b5d9a',
+  Others: '#6f7378',
+  'Eat Out': '#b64f4f',
+}
 const CATEGORY_ALIASES = {
   Housing: 'Rent',
   Groceries: 'Grocery',
@@ -860,6 +868,12 @@ function App() {
           </div>
         </header>
 
+        <ExpensePieChart
+          groups={groupedCategories}
+          monthLabel={formatMonthLabel(selectedMonth)}
+          total={totalSpent}
+        />
+
         <section className="metrics-row" aria-label="Monthly summary">
           <SummaryCard label="Total spent" value={formatCurrency(totalSpent)} />
           <SummaryCard label="Budget left" value={budget ? formatCurrency(budgetLeft) : 'Not set'} />
@@ -1274,6 +1288,73 @@ function SummaryCard({ label, value, detail }) {
   )
 }
 
+function ExpensePieChart({ groups, monthLabel, total }) {
+  const chartGroups = groups.filter((group) => group.amount > 0)
+  const chartBackground = chartGroups.length
+    ? `conic-gradient(${getPieGradientStops(chartGroups, total).join(', ')})`
+    : undefined
+
+  return (
+    <section className="expense-chart-panel" aria-labelledby="expense-chart-title">
+      <h3 id="expense-chart-title">Expense Breakdown</h3>
+
+      {chartGroups.length ? (
+        <div
+          className="expense-breakdown-visual"
+          role="img"
+          aria-label={`Expense category percentage breakdown for ${monthLabel}`}
+        >
+          {chartGroups.map((group, index) => (
+            <div
+              className={`breakdown-label breakdown-label-${getBreakdownLabelPosition(index)}`}
+              style={{ color: CATEGORY_COLORS[group.category] }}
+              key={group.category}
+            >
+              <div className="breakdown-label-copy">
+                <strong>{formatPercentage(group.amount / total)}</strong>
+                <span>{group.category}</span>
+              </div>
+              <span className="breakdown-connector" aria-hidden="true" />
+            </div>
+          ))}
+
+          <div
+            className="expense-pie"
+            style={chartBackground ? { background: chartBackground } : undefined}
+          />
+        </div>
+      ) : (
+        <div className="expense-breakdown-empty">
+          <div className="expense-pie expense-pie-empty" aria-hidden="true" />
+          <p>Add an expense to see the monthly chart.</p>
+        </div>
+        )}
+    </section>
+  )
+}
+
+function getBreakdownLabelPosition(index) {
+  return ['left-top', 'right-top', 'left-middle', 'right-bottom', 'left-bottom', 'right-middle'][
+    index % 6
+  ]
+}
+
+function getPieGradientStops(groups, total) {
+  let usedPercent = 0
+
+  return groups.map((group, index) => {
+    const startPercent = usedPercent
+    const endPercent =
+      index === groups.length - 1
+        ? 100
+        : roundCurrency(startPercent + (group.amount / total) * 100)
+
+    usedPercent = endPercent
+
+    return `${CATEGORY_COLORS[group.category]} ${startPercent}% ${endPercent}%`
+  })
+}
+
 function getCategoryGroups(expenses) {
   return CATEGORIES.map((category) => {
     const categoryExpenses = expenses.filter((expense) => expense.category === category)
@@ -1318,6 +1399,13 @@ function toDateInputValue(date) {
 
 function formatCurrency(value) {
   return currencyFormatter.format(roundCurrency(value))
+}
+
+function formatPercentage(value) {
+  return new Intl.NumberFormat(undefined, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+  }).format(value)
 }
 
 function formatDate(dateString) {

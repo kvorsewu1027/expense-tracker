@@ -119,6 +119,161 @@
   font-size: 2rem;
 }
 
+.expense-chart-panel {
+  display: block;
+  margin: 1rem 0;
+  padding: 1rem 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.expense-chart-panel h3 {
+  margin: 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.expense-breakdown-visual {
+  position: relative;
+  min-height: 270px;
+  margin-top: 0.45rem;
+  overflow: hidden;
+}
+
+.expense-breakdown-empty {
+  display: grid;
+  place-items: center;
+  gap: 0.75rem;
+  min-height: 230px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.expense-breakdown-empty p {
+  margin: 0;
+}
+
+.expense-pie {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: min(42vw, 10.5rem);
+  aspect-ratio: 1;
+  margin: 2.25rem auto 0;
+  border-radius: 50%;
+  background: #f0f0ef;
+  filter: drop-shadow(0 14px 22px rgba(32, 33, 36, 0.18));
+}
+
+.expense-pie::after {
+  position: absolute;
+  inset: 32%;
+  content: '';
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 10px #fff;
+}
+
+.expense-pie-empty {
+  border: 1px dashed var(--line);
+  background: #fbfbfa;
+  filter: none;
+}
+
+.breakdown-label {
+  position: absolute;
+  display: grid;
+  align-items: start;
+  width: min(35%, 10rem);
+  gap: 0.45rem;
+}
+
+.breakdown-label-left-top,
+.breakdown-label-left-middle,
+.breakdown-label-left-bottom {
+  left: 0;
+  grid-template-columns: auto minmax(2.7rem, 1fr);
+}
+
+.breakdown-label-right-top,
+.breakdown-label-right-middle,
+.breakdown-label-right-bottom {
+  right: 0;
+  grid-template-columns: minmax(2.7rem, 1fr) auto;
+}
+
+.breakdown-label-right-top .breakdown-label-copy,
+.breakdown-label-right-middle .breakdown-label-copy,
+.breakdown-label-right-bottom .breakdown-label-copy {
+  order: 2;
+}
+
+.breakdown-label-left-top,
+.breakdown-label-right-top {
+  top: 1.5rem;
+}
+
+.breakdown-label-left-middle,
+.breakdown-label-right-middle {
+  top: 6.65rem;
+}
+
+.breakdown-label-left-bottom,
+.breakdown-label-right-bottom {
+  bottom: 1.35rem;
+}
+
+.breakdown-label-copy {
+  min-width: 0;
+}
+
+.breakdown-label-copy strong,
+.breakdown-label-copy span {
+  display: block;
+  line-height: 1.1;
+}
+
+.breakdown-label-copy strong {
+  font-size: 1.35rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.breakdown-label-copy span {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 0.76rem;
+}
+
+.breakdown-connector {
+  align-self: center;
+  min-width: 2.7rem;
+  border-top: 2px dotted currentColor;
+}
+
+.breakdown-label-left-top .breakdown-connector,
+.breakdown-label-right-top .breakdown-connector {
+  transform: translateY(0.45rem) rotate(18deg);
+}
+
+.breakdown-label-left-bottom .breakdown-connector,
+.breakdown-label-right-bottom .breakdown-connector {
+  transform: translateY(-0.45rem) rotate(-18deg);
+}
+
+.breakdown-label-right-top .breakdown-connector,
+.breakdown-label-right-bottom .breakdown-connector {
+  transform-origin: right center;
+}
+
+.breakdown-label-left-top .breakdown-connector,
+.breakdown-label-left-bottom .breakdown-connector {
+  transform-origin: left center;
+}
+
 .topbar-actions {
   display: flex;
   gap: 0.75rem;
@@ -634,6 +789,42 @@
   .field-row {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .expense-breakdown-visual {
+    display: grid;
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .expense-pie {
+    order: -1;
+    width: min(100%, 10.5rem);
+    margin-top: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .breakdown-label,
+  .breakdown-label-left-top,
+  .breakdown-label-left-middle,
+  .breakdown-label-left-bottom,
+  .breakdown-label-right-top,
+  .breakdown-label-right-middle,
+  .breakdown-label-right-bottom {
+    position: static;
+    width: 100%;
+    grid-template-columns: 1fr;
+    padding-block: 0.25rem;
+  }
+
+  .breakdown-label-right-top .breakdown-label-copy,
+  .breakdown-label-right-middle .breakdown-label-copy,
+  .breakdown-label-right-bottom .breakdown-label-copy {
+    order: initial;
+  }
+
+  .breakdown-connector {
+    display: none;
   }
 
   .amount-calculator {
