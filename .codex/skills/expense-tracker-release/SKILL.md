@@ -13,6 +13,56 @@ Use this skill for this repository's recurring GitHub workflow:
 - Deploy the built Vite app to GitHub Pages.
 - Merge a PR into `main` with a descriptive merge commit.
 
+## Fast Path
+
+Use this compact flow unless the working tree or request requires a special path:
+
+1. Inspect:
+
+```powershell
+git status --short --branch
+git diff --stat
+```
+
+2. Summarize the changed files from `git diff` and validate:
+
+```powershell
+npm.cmd run lint
+npm.cmd run build
+```
+
+3. Commit on the current `codex/` branch when it already has an open PR for the same work; otherwise branch from `main` with `codex/<short-description>`.
+
+4. Push with upstream tracking:
+
+```powershell
+git push -u origin <branch>
+```
+
+5. Use GitHub CLI without browser automation. Prefer the repo-local portable binary when present:
+
+```powershell
+$gh = if (Test-Path .\.tools\gh\bin\gh.exe) { ".\.tools\gh\bin\gh.exe" } else { "gh" }
+& $gh pr view --repo kvorsewu1027/expense-tracker --head <branch> --json number,url,state
+& $gh pr create --repo kvorsewu1027/expense-tracker --base main --head <branch> --title "<title>" --body-file <body-file>
+& $gh pr comment <pr-number-or-url> --body-file <comment-file>
+```
+
+If `pr view --head` finds an open PR, update that PR by pushing the new commit and adding a fresh summary comment instead of creating a duplicate PR.
+
+6. Deploy and verify:
+
+```powershell
+npm.cmd run build
+node node_modules\gh-pages\bin\gh-pages-clean.js
+node node_modules\gh-pages\bin\gh-pages.js -d dist -r https://github.com/kvorsewu1027/expense-tracker.git
+git ls-remote --heads origin gh-pages
+curl.exe -L https://raw.githubusercontent.com/kvorsewu1027/expense-tracker/gh-pages/index.html
+curl.exe -I https://kvorsewu1027.github.io/expense-tracker/
+```
+
+7. Final response: report branch, commit SHA, PR URL, comment status, validation, deployed asset hashes, Pages HTTP status, and any issue encountered.
+
 ## Repository Facts
 
 - Repo root: `C:\Users\josep\Documents\Codex\expense-tracker`
