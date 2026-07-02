@@ -1,6 +1,6 @@
 # Chu & Liang's Expense Tracker
 
-Chu & Liang's Expense Tracker is a monthly expense tracker rewritten in React with Vite.
+Chu & Liang's Expense Tracker is a monthly expense tracker written in React with Vite.
 
 ## Features
 
