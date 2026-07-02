@@ -2,12 +2,10 @@
   "rules": {
     ".read": false,
     ".write": false,
-    "ledgers": {
-      "main": {
-        ".read": "auth !== null && (auth.uid === 'e8eP5Gn88hhoM4Dh6hc1gcTNbjs2' || auth.uid === 'yFlHuJMIumQIxSyMHRbFDmmw2MH2')",
-        ".write": "auth !== null && newData.exists() && (auth.uid === 'e8eP5Gn88hhoM4Dh6hc1gcTNbjs2' || auth.uid === 'yFlHuJMIumQIxSyMHRbFDmmw2MH2')",
-        ".validate": "newData.hasChildren(['savedAt', 'state']) && newData.child('savedAt').isString() && newData.child('state').child('selectedMonth').isString()"
-      }
+    "expenseTracker": {
+      ".read": "auth !== null && (auth.uid === 'e8eP5Gn88hhoM4Dh6hc1gcTNbjs2' || auth.uid === 'yFlHuJMIumQIxSyMHRbFDmmw2MH2')",
+      ".write": "auth !== null && newData.exists() && (auth.uid === 'e8eP5Gn88hhoM4Dh6hc1gcTNbjs2' || auth.uid === 'yFlHuJMIumQIxSyMHRbFDmmw2MH2')",
+      ".validate": "newData.hasChildren(['savedAt', 'state']) && newData.child('savedAt').isString() && newData.child('state').child('selectedMonth').isString()"
     }
   }
 }

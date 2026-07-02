@@ -54,7 +54,7 @@ By default, Chu & Liang's Expense Tracker still saves to the browser so it works
 7. Copy `.env.example` to `.env.local` and fill in every value:
 
 ```powershell
-VITE_LEDGER_SYNC_URL=https://your-project-id-default-rtdb.europe-west1.firebasedatabase.app/ledgers/main
+VITE_LEDGER_SYNC_URL=https://your-project-id-default-rtdb.europe-west1.firebasedatabase.app/expenseTracker
 VITE_FIREBASE_API_KEY=your-firebase-web-api-key
 VITE_FIREBASE_AUTH_DOMAIN=your-project-id.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=your-project-id
@@ -74,7 +74,7 @@ The shared database URL is deployment configuration and is not editable in the a
 
 ### Realtime Database rules
 
-Before using shared sync, open `database.rules.json`, replace `LIANG_SHIN_UID` and `CHU_HSUAN_UID` with the same Firebase UIDs, and publish the file in **Realtime Database → Rules**. The included rules deny all other reads and writes and only grant both approved users access to `ledgers/main`.
+Before using shared sync, verify that `database.rules.json` contains the same two approved Firebase UIDs, and publish the file in **Realtime Database → Rules**. The included rules deny all other reads and writes and only grant both approved users access to `expenseTracker`.
 
 If the Firebase CLI is installed and the project has been selected, the same rules can be deployed with:
 

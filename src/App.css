@@ -29,6 +29,14 @@
 .account-email,
 .account-local {
   color: var(--muted);
+}
+
+.account-email,
+.account-sign-out {
+  font-size: 1rem;
+}
+
+.account-local {
   font-size: 0.82rem;
 }
 

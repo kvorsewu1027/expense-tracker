@@ -78,7 +78,7 @@ export default function AuthScreen({ auth, mode = 'sign-in', user }) {
 
         {mode === 'loading' ? (
           <div className="auth-message" aria-live="polite">
-            <p className="auth-kicker">Private household ledger</p>
+            <p className="auth-kicker">Chu & Liang's Expense Tracker</p>
             <h1 id="auth-title">Checking your session…</h1>
             <span className="auth-loading-bar" aria-hidden="true" />
           </div>
@@ -112,7 +112,7 @@ export default function AuthScreen({ auth, mode = 'sign-in', user }) {
         {mode === 'sign-in' ? (
           <>
             <header className="auth-heading">
-              <p className="auth-kicker">Private household ledger</p>
+              <p className="auth-kicker">Chu & Liang's Expense Tracker</p>
               <h1 id="auth-title">Welcome home.</h1>
               <p>Sign in as Liang-Shin or Chu-Hsuan to open the shared expenses.</p>
             </header>
@@ -154,7 +154,7 @@ export default function AuthScreen({ auth, mode = 'sign-in', user }) {
               </label>
 
               <button className="primary-button auth-submit" type="submit" disabled={isWorking}>
-                {isWorking ? 'Signing in…' : 'Open shared ledger'}
+                {isWorking ? 'Signing in…' : 'Sign in'}
               </button>
 
               <button
