@@ -10,7 +10,8 @@ Chu & Liang's Expense Tracker is a monthly expense tracker rewritten in React wi
 - Set a monthly budget and compare it against real spending
 - Import and export CSV data
 - Use one responsive UI on laptop and phone
-- Sync one shared ledger across laptop and phone when a remote ledger URL is configured
+- Sign in with one of two approved household accounts
+- Sync one protected shared ledger across laptop and phone when Firebase is configured
 
 ## Scripts
 
@@ -45,21 +46,43 @@ git commit -m "Initial React expense tracker"
 By default, Chu & Liang's Expense Tracker still saves to the browser so it works offline during development. That means a laptop and phone will not share expenses until both are pointed at the same shared ledger. To make the deployed app use the same ledger on both devices, configure a Firebase Realtime Database URL:
 
 1. Create a Firebase project and enable Realtime Database.
-2. Create one ledger path, for example `ledgers/main`.
-3. Add this to `.env.local` before running `npm run deploy`:
+2. In **Authentication → Sign-in method**, enable **Email/Password**.
+3. In **Authentication → Users**, manually create accounts for Liang-Shin and Chu-Hsuan. Do not add public registration to the app.
+4. Copy the UID shown for each user.
+5. In **Authentication → Settings → Authorized domains**, add `kvorsewu1027.github.io`. Add `localhost` too only when local Firebase sign-in testing is needed.
+6. In **Project settings → Your apps**, create or select a Web app and copy its web configuration values.
+7. Copy `.env.example` to `.env.local` and fill in every value:
 
 ```powershell
 VITE_LEDGER_SYNC_URL=https://your-project-id-default-rtdb.europe-west1.firebasedatabase.app/ledgers/main
+VITE_FIREBASE_API_KEY=your-firebase-web-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project-id.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_ALLOWED_UIDS=liang-shin-firebase-uid,chu-hsuan-firebase-uid
+VITE_FIREBASE_DISPLAY_NAMES=liang-shin-firebase-uid:Liang-Shin,chu-hsuan-firebase-uid:Chu-Hsuan
 ```
 
-The app adds `.json` automatically for Firebase's REST API. For a personal ledger without sign-in, the database rules must allow reads and writes to that path. Keep the database URL private, or add Firebase auth before using this for sensitive shared data.
+The Firebase web API key and user UIDs are public identifiers, not secrets. Never place a service-account key or database secret in a `VITE_` variable.
 
-You can also configure the deployed app without rebuilding:
+On each approved user's next successful login, the app applies the configured display name to their Firebase Authentication profile. Settings and the app header then show the display name instead of the email address.
 
-1. Open Settings on the laptop that already has the expenses.
-2. Paste the shared ledger URL into "Shared ledger URL" and choose "Save sync".
-3. Reopen Settings after the page reloads and choose "Copy phone link".
-4. Open that copied link on the phone. The phone stores the same ledger URL and loads the shared expenses.
+The app adds `.json` automatically for Firebase's REST API and attaches the signed-in user's short-lived Firebase ID token to each request. When Firebase is configured, the ledger remains hidden until an approved user signs in. The client-side UID allowlist improves the UI, while Realtime Database Rules provide the actual security boundary.
+
+The sign-in screen keeps users signed in across browser restarts by default. Clearing **Keep me signed in on this device** limits the session to the current browser session. Firebase stores the session token; the app never stores the user's password.
+
+The shared database URL is deployment configuration and is not editable in the app. Settings shows only the signed-in account and current sync status, so every authenticated device uses the same `VITE_LEDGER_SYNC_URL` automatically.
+
+### Realtime Database rules
+
+Before using shared sync, open `database.rules.json`, replace `LIANG_SHIN_UID` and `CHU_HSUAN_UID` with the same Firebase UIDs, and publish the file in **Realtime Database → Rules**. The included rules deny all other reads and writes and only grant both approved users access to `ledgers/main`.
+
+If the Firebase CLI is installed and the project has been selected, the same rules can be deployed with:
+
+```powershell
+firebase deploy --only database
+```
+
+Back up the current ledger before tightening the rules. Deploy the authentication-capable app, verify that both users can sign in, and then publish the restrictive rules so the existing anonymous sync is not locked out prematurely.
 
 ## Import and export
 

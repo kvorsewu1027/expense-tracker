@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
+import { onAuthStateChanged, signOut, updateProfile } from 'firebase/auth'
 import './App.css'
+import AuthScreen from './AuthScreen.jsx'
+import {
+  firebaseAuth,
+  getConfiguredDisplayName,
+  hasConfiguredAllowedUsers,
+  isAllowedFirebaseUser,
+  isFirebaseConfigured,
+} from './firebase.js'
 
 const STORAGE_KEY = 'ledger-bloom-react-state'
-const SYNC_URL_STORAGE_KEY = `${STORAGE_KEY}-sync-url`
 const BUILD_SYNC_URL = normalizeSyncUrl(import.meta.env.VITE_LEDGER_SYNC_URL)
-const SYNC_URL_QUERY_PARAMS = ['syncUrl', 'ledgerSyncUrl']
-const REMOTE_SYNC_URL = getInitialRemoteSyncUrl()
+const REMOTE_SYNC_URL = BUILD_SYNC_URL
 const SYNC_POLL_INTERVAL_MS = 10000
 const CSV_COLUMNS = [
   'type',
@@ -145,41 +152,19 @@ function normalizeSyncUrl(value) {
   return trimmedValue.endsWith('.json') ? trimmedValue : `${trimmedValue}.json`
 }
 
-function getInitialRemoteSyncUrl() {
-  if (typeof window === 'undefined') {
-    return BUILD_SYNC_URL
+async function getAuthenticatedSyncUrl(user) {
+  if (!user) {
+    throw new Error('Authentication is required for shared ledger sync.')
   }
 
-  try {
-    const pageUrl = new URL(window.location.href)
-    const sharedSyncUrl = SYNC_URL_QUERY_PARAMS.map((paramName) =>
-      normalizeSyncUrl(pageUrl.searchParams.get(paramName))
-    ).find(Boolean)
-
-    if (sharedSyncUrl) {
-      window.localStorage.setItem(SYNC_URL_STORAGE_KEY, sharedSyncUrl)
-      SYNC_URL_QUERY_PARAMS.forEach((paramName) => pageUrl.searchParams.delete(paramName))
-      window.history.replaceState(
-        null,
-        '',
-        `${pageUrl.pathname}${pageUrl.search}${pageUrl.hash}`
-      )
-      return sharedSyncUrl
-    }
-
-    return normalizeSyncUrl(window.localStorage.getItem(SYNC_URL_STORAGE_KEY)) || BUILD_SYNC_URL
-  } catch (error) {
-    console.error('Unable to read shared ledger configuration.', error)
-    return BUILD_SYNC_URL
-  }
+  const token = await user.getIdToken()
+  const authenticatedUrl = new URL(REMOTE_SYNC_URL)
+  authenticatedUrl.searchParams.set('auth', token)
+  return authenticatedUrl.toString()
 }
 
-function formatSyncUrlForInput(syncUrl) {
-  return syncUrl.endsWith('.json') ? syncUrl.slice(0, -5) : syncUrl
-}
-
-async function fetchSharedLedger() {
-  const response = await fetch(REMOTE_SYNC_URL, {
+async function fetchSharedLedger(user) {
+  const response = await fetch(await getAuthenticatedSyncUrl(user), {
     cache: 'no-store',
   })
 
@@ -195,8 +180,8 @@ async function fetchSharedLedger() {
   return sanitizeState(payload.state || payload)
 }
 
-async function saveSharedLedger(state) {
-  const response = await fetch(REMOTE_SYNC_URL, {
+async function saveSharedLedger(state, user) {
+  const response = await fetch(await getAuthenticatedSyncUrl(user), {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -411,14 +396,16 @@ function App() {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [editingExpenseId, setEditingExpenseId] = useState(null)
-  const [syncUrlDraft, setSyncUrlDraft] = useState(() => formatSyncUrlForInput(REMOTE_SYNC_URL))
-  const [syncCopyStatus, setSyncCopyStatus] = useState('')
   const [hasCompletedInitialSync, setHasCompletedInitialSync] = useState(!REMOTE_SYNC_URL)
   const [syncStatus, setSyncStatus] = useState(() => ({
     type: REMOTE_SYNC_URL ? 'loading' : 'local',
     message: REMOTE_SYNC_URL
       ? 'Connecting to shared ledger...'
       : 'Sync is not configured. This device has its own saved expenses.',
+  }))
+  const [authState, setAuthState] = useState(() => ({
+    status: firebaseAuth ? 'loading' : 'local',
+    user: null,
   }))
   const latestStateRef = useRef(trackerState)
   const skipNextRemoteSaveRef = useRef(false)
@@ -437,12 +424,48 @@ function App() {
   const amountCalculation = calculateAmountExpression(formState.amount)
 
   useEffect(() => {
+    if (!firebaseAuth) {
+      return undefined
+    }
+
+    return onAuthStateChanged(
+      firebaseAuth,
+      async (user) => {
+        const configuredDisplayName = getConfiguredDisplayName(user)
+
+        if (
+          user &&
+          isAllowedFirebaseUser(user) &&
+          configuredDisplayName &&
+          user.displayName !== configuredDisplayName
+        ) {
+          try {
+            await updateProfile(user, { displayName: configuredDisplayName })
+          } catch (error) {
+            console.error('Unable to update Firebase display name.', error)
+          }
+        }
+
+        setAuthState({
+          status: user ? 'authenticated' : 'signed-out',
+          user,
+        })
+
+        if (!user && REMOTE_SYNC_URL) {
+          setHasCompletedInitialSync(false)
+        }
+      },
+      () => setAuthState({ status: 'signed-out', user: null })
+    )
+  }, [])
+
+  useEffect(() => {
     latestStateRef.current = trackerState
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trackerState))
   }, [trackerState])
 
   useEffect(() => {
-    if (!REMOTE_SYNC_URL) {
+    if (!REMOTE_SYNC_URL || !authState.user || !isAllowedFirebaseUser(authState.user)) {
       return undefined
     }
 
@@ -450,7 +473,7 @@ function App() {
 
     async function loadSharedLedger() {
       try {
-        const sharedState = await fetchSharedLedger()
+        const sharedState = await fetchSharedLedger(authState.user)
 
         if (isCancelled) {
           return
@@ -464,7 +487,7 @@ function App() {
             message: `Shared ledger loaded ${formatSyncTime(new Date())}`,
           })
         } else {
-          await saveSharedLedger(latestStateRef.current)
+          await saveSharedLedger(latestStateRef.current, authState.user)
           if (!isCancelled) {
             setSyncStatus({
               type: 'synced',
@@ -492,10 +515,10 @@ function App() {
     return () => {
       isCancelled = true
     }
-  }, [])
+  }, [authState.user])
 
   useEffect(() => {
-    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync) {
+    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync || !authState.user) {
       return undefined
     }
 
@@ -510,7 +533,7 @@ function App() {
           type: 'saving',
           message: 'Saving to shared ledger...',
         })
-        await saveSharedLedger(trackerState)
+        await saveSharedLedger(trackerState, authState.user)
         setSyncStatus({
           type: 'synced',
           message: `Shared ledger saved ${formatSyncTime(new Date())}`,
@@ -525,16 +548,16 @@ function App() {
     }, 450)
 
     return () => window.clearTimeout(timeoutId)
-  }, [trackerState, hasCompletedInitialSync])
+  }, [trackerState, hasCompletedInitialSync, authState.user])
 
   useEffect(() => {
-    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync) {
+    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync || !authState.user) {
       return undefined
     }
 
     const intervalId = window.setInterval(async () => {
       try {
-        const sharedState = await fetchSharedLedger()
+        const sharedState = await fetchSharedLedger(authState.user)
         if (!sharedState || statesAreEqual(sharedState, latestStateRef.current)) {
           return
         }
@@ -555,7 +578,7 @@ function App() {
     }, SYNC_POLL_INTERVAL_MS)
 
     return () => window.clearInterval(intervalId)
-  }, [hasCompletedInitialSync])
+  }, [hasCompletedInitialSync, authState.user])
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -787,50 +810,52 @@ function App() {
     reader.readAsText(file)
   }
 
-  function handleSyncUrlSave() {
-    const normalizedSyncUrl = normalizeSyncUrl(syncUrlDraft)
-
-    if (!normalizedSyncUrl) {
-      window.alert('Enter a shared ledger URL before saving sync settings.')
-      return
-    }
-
-    window.localStorage.setItem(SYNC_URL_STORAGE_KEY, normalizedSyncUrl)
-    window.location.reload()
+  if (authState.status === 'loading') {
+    return <AuthScreen mode="loading" />
   }
 
-  function handleSyncUrlClear() {
-    window.localStorage.removeItem(SYNC_URL_STORAGE_KEY)
-    window.location.reload()
+  if (
+    (REMOTE_SYNC_URL && !isFirebaseConfigured) ||
+    (isFirebaseConfigured && !hasConfiguredAllowedUsers)
+  ) {
+    return <AuthScreen mode="configuration" />
   }
 
-  async function handleCopySyncLink() {
-    if (!REMOTE_SYNC_URL) {
-      setSyncCopyStatus('Save a shared ledger URL first.')
-      return
-    }
+  if (isFirebaseConfigured && !authState.user) {
+    return <AuthScreen auth={firebaseAuth} />
+  }
 
-    const pairingUrl = new URL(window.location.href)
-    SYNC_URL_QUERY_PARAMS.forEach((paramName) => pairingUrl.searchParams.delete(paramName))
-    pairingUrl.searchParams.set('syncUrl', formatSyncUrlForInput(REMOTE_SYNC_URL))
-
-    try {
-      await navigator.clipboard.writeText(pairingUrl.toString())
-      setSyncCopyStatus('Phone setup link copied.')
-    } catch (error) {
-      console.error('Unable to copy sync link.', error)
-      window.prompt('Copy this link to your phone:', pairingUrl.toString())
-      setSyncCopyStatus('Copy the setup link shown above.')
-    }
+  if (authState.user && !isAllowedFirebaseUser(authState.user)) {
+    return <AuthScreen auth={firebaseAuth} mode="unauthorized" user={authState.user} />
   }
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="brand-block">
-          <span className="brand-mark">CL</span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="" />
+          </span>
           <div>
             <h1>Chu & Liang's Expense Tracker</h1>
+          </div>
+          <div className="account-block">
+            {authState.user ? (
+              <>
+                <span className="account-email">
+                  {authState.user.displayName || authState.user.email}
+                </span>
+                <button
+                  className="account-sign-out"
+                  type="button"
+                  onClick={() => signOut(firebaseAuth)}
+                >
+                  Sign out
+                </button>
+              </>
+            ) : (
+              <span className="account-local">Local-only mode</span>
+            )}
           </div>
         </div>
       </header>
@@ -1212,38 +1237,17 @@ function App() {
                 </button>
               </footer>
 
-              <div className="sync-settings">
-                <label>
-                  <span>Shared Database URL</span>
-                  <input
-                    type="url"
-                    value={syncUrlDraft}
-                    onChange={(event) => {
-                      setSyncUrlDraft(event.target.value)
-                      setSyncCopyStatus('')
-                    }}
-                    placeholder="https://your-database.firebaseio.com/ledgers/main"
-                  />
-                </label>
-                <div className="settings-data-actions" aria-label="Sync controls">
-                  <button className="ghost-button" type="button" onClick={handleSyncUrlSave}>
-                    Save sync
-                  </button>
-                  <button className="ghost-button" type="button" onClick={handleCopySyncLink}>
-                    Copy phone link
-                  </button>
-                  <button className="ghost-button" type="button" onClick={handleSyncUrlClear}>
-                    Clear sync
-                  </button>
+              <section className="account-sync-panel" aria-label="Account and sync">
+                <div className="account-summary">
+                  <span>Signed in account</span>
+                  <strong>
+                    {authState.user?.displayName || authState.user?.email || 'Local-only mode'}
+                  </strong>
                 </div>
-                {syncCopyStatus ? (
-                  <p className="sync-hint">{syncCopyStatus}</p>
-                ) : null}
-              </div>
-
-              <p className={`sync-status sync-status-${syncStatus.type}`}>
-                {syncStatus.message}
-              </p>
+                <p className={`sync-status sync-status-${syncStatus.type}`}>
+                  {syncStatus.message}
+                </p>
+              </section>
 
               <div className="settings-export-import">
                 <h3>Monthly Expense Export/Import</h3>
