@@ -1,6 +1,6 @@
 # Chu & Liang's Expense Tracker
 
-Chu & Liang's Expense Tracker is a monthly expense tracker rewritten in React with Vite.
+Chu & Liang's Expense Tracker is a monthly expense tracker written in React with Vite.
 
 ## Features
 
@@ -86,4 +86,12 @@ Back up the current ledger before tightening the rules. Deploy the authenticatio
 
 ## Import and export
 
-The Settings panel exports a `.csv` file with expense rows and budget rows. Importing a file replaces the current ledger with the file contents. CSV files with common expense headers such as `name`, `amount`, `date`, `category`, `payment`, and `note` can be imported, and older Ledger Bloom `.json` exports are still accepted for compatibility.
+The Settings panel exports a `.csv` file with expense rows and budget rows. Importing merges expenses by ID and updates included budgets, preserving other months. Reimporting the same IDs updates records without duplicates. Rows without IDs receive new IDs on each import. CSV files with common expense headers such as `name`, `amount`, `date`, `category`, `payment`, and `note` can be imported, and older Ledger Bloom `.json` exports are still accepted for compatibility.
+
+Shared sync uses Firebase ETags and conditional writes to retry concurrent changes safely. Unrelated changes are merged against the last acknowledged snapshot; simultaneous edits to the same record use the last successful writer. Before imports and remote replacements, ten recovery snapshots are retained in browser localStorage under `ledger-bloom-react-state-backups`. Downloaded backups remain necessary.
+
+Settings also offers **Back up all months**, which downloads a JSON file that can be imported to merge its records back into the ledger. **Download recovery snapshots** downloads the local snapshot history; extract a snapshot's `state` object into a separate JSON file before importing it.
+
+For independent daily backups, Firebase Realtime Database supports automated backups on the Blaze plan through the console's Backups tab: https://firebase.google.com/docs/database/backups. Keep downloaded all-month JSON backups as well, especially on the free Spark plan. Browser snapshots disappear when site data is cleared. Backups enabled now cannot recover data already deleted before the first backup.
+
+On first migration from legacy local storage, the existing local ledger becomes the baseline and is retained in recovery snapshots before remote reconciliation. It is not automatically uploaded over newer remote data; import a backup explicitly to restore missing records. Changes and imports made after initialization remain pending across retries and reloads. Selected month is a device preference and does not trigger shared database writes.
