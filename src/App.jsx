@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { onAuthStateChanged, signOut, updateProfile } from 'firebase/auth'
 import './App.css'
+import { mergeLedgerChanges, mergeImportedLedger, ledgerDataAreEqual } from './ledgerMerge.js'
 import AuthScreen from './AuthScreen.jsx'
+import { readLedgerSnapshot, writeLedgerSnapshot, getBudgetDraft, initialSyncBaseline } from './ledgerPersistence.js'
 import {
   firebaseAuth,
   getConfiguredDisplayName,
@@ -11,6 +13,15 @@ import {
 } from './firebase.js'
 
 const STORAGE_KEY = 'ledger-bloom-react-state'
+function backupLedger(state) {
+  try {
+    const key = STORAGE_KEY + '-backups'
+    const backups = JSON.parse(window.localStorage.getItem(key) || '[]')
+    if (JSON.stringify(backups.at(-1)?.state) === JSON.stringify(state)) return
+    backups.push({ savedAt: new Date().toISOString(), state })
+    window.localStorage.setItem(key, JSON.stringify(backups.slice(-10)))
+  } catch (error) { console.error('Unable to save recovery snapshot.', error) }
+}
 const BUILD_SYNC_URL = normalizeSyncUrl(import.meta.env.VITE_LEDGER_SYNC_URL)
 const REMOTE_SYNC_URL = BUILD_SYNC_URL
 const SYNC_POLL_INTERVAL_MS = 10000
@@ -84,7 +95,7 @@ function loadInitialState() {
       return createDefaultTrackerState()
     }
 
-    return sanitizeState(JSON.parse(savedState))
+    return sanitizeState(JSON.parse(savedState).state || JSON.parse(savedState))
   } catch (error) {
     console.error('Unable to load saved data.', error)
     return createDefaultTrackerState()
@@ -165,36 +176,21 @@ async function getAuthenticatedSyncUrl(user) {
 
 async function fetchSharedLedger(user) {
   const response = await fetch(await getAuthenticatedSyncUrl(user), {
-    cache: 'no-store',
+    cache: 'no-store', headers: { 'X-Firebase-ETag': 'true' },
   })
-
-  if (!response.ok) {
-    throw new Error(`Shared ledger load failed with ${response.status}`)
-  }
-
+  if (!response.ok) throw new Error('Shared ledger load failed: ' + response.status)
   const payload = await response.json()
-  if (!payload) {
-    return null
-  }
-
-  return sanitizeState(payload.state || payload)
+  return { state: payload ? sanitizeState(payload.state || payload) : null, etag: response.headers.get('ETag') }
 }
-
-async function saveSharedLedger(state, user) {
+async function saveSharedLedger(state, user, etag) {
+  if (!etag) throw new Error('Missing database version; refusing unsafe overwrite.')
   const response = await fetch(await getAuthenticatedSyncUrl(user), {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      savedAt: new Date().toISOString(),
-      state: sanitizeState(state),
-    }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'if-match': etag },
+    body: JSON.stringify({ savedAt: new Date().toISOString(), state: sanitizeState(state) }),
   })
-
-  if (!response.ok) {
-    throw new Error(`Shared ledger save failed with ${response.status}`)
-  }
+  if (response.status === 412) return false
+  if (!response.ok) throw new Error('Shared save failed: ' + response.status)
+  return true
 }
 
 function statesAreEqual(left, right) {
@@ -396,7 +392,6 @@ function App() {
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [editingExpenseId, setEditingExpenseId] = useState(null)
-  const [hasCompletedInitialSync, setHasCompletedInitialSync] = useState(!REMOTE_SYNC_URL)
   const [syncStatus, setSyncStatus] = useState(() => ({
     type: REMOTE_SYNC_URL ? 'loading' : 'local',
     message: REMOTE_SYNC_URL
@@ -408,7 +403,15 @@ function App() {
     user: null,
   }))
   const latestStateRef = useRef(trackerState)
-  const skipNextRemoteSaveRef = useRef(false)
+  const syncBaselineRef = useRef(undefined)
+  if (syncBaselineRef.current === undefined) {
+    try {
+      const saved = readLedgerSnapshot(window.localStorage, STORAGE_KEY, REMOTE_SYNC_URL, trackerState)
+      syncBaselineRef.current = sanitizeState(initialSyncBaseline(saved))
+    } catch {
+      syncBaselineRef.current = trackerState
+    }
+  }
 
   const { expenses, budgetsByMonth, selectedMonth } = trackerState
   const [budgetDraft, setBudgetDraft] = useState(() =>
@@ -451,9 +454,7 @@ function App() {
           user,
         })
 
-        if (!user && REMOTE_SYNC_URL) {
-          setHasCompletedInitialSync(false)
-        }
+
       },
       () => setAuthState({ status: 'signed-out', user: null })
     )
@@ -461,124 +462,59 @@ function App() {
 
   useEffect(() => {
     latestStateRef.current = trackerState
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(trackerState))
+    writeLedgerSnapshot(window.localStorage, STORAGE_KEY, REMOTE_SYNC_URL, trackerState, syncBaselineRef.current)
   }, [trackerState])
 
   useEffect(() => {
-    if (!REMOTE_SYNC_URL || !authState.user || !isAllowedFirebaseUser(authState.user)) {
-      return undefined
-    }
-
-    let isCancelled = false
-
-    async function loadSharedLedger() {
+    const user = authState.user
+    if (!REMOTE_SYNC_URL || !user || !isAllowedFirebaseUser(user)) return undefined
+    let cancelled = false
+    let running = false
+    let base = syncBaselineRef.current
+    let lastPoll = 0
+    backupLedger(latestStateRef.current)
+    async function synchronize() {
+      if (cancelled || running) return
+      const local = latestStateRef.current
+      if (ledgerDataAreEqual(base, local) && Date.now() - lastPoll < SYNC_POLL_INTERVAL_MS) return
+      running = true
       try {
-        const sharedState = await fetchSharedLedger(authState.user)
-
-        if (isCancelled) {
-          return
-        }
-
-        if (sharedState) {
-          skipNextRemoteSaveRef.current = true
-          setTrackerState(sharedState)
-          setSyncStatus({
-            type: 'synced',
-            message: `Shared ledger loaded ${formatSyncTime(new Date())}`,
-          })
-        } else {
-          await saveSharedLedger(latestStateRef.current, authState.user)
-          if (!isCancelled) {
-            setSyncStatus({
-              type: 'synced',
-              message: `Shared ledger created ${formatSyncTime(new Date())}`,
-            })
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const remote = await fetchSharedLedger(user)
+          if (cancelled) return
+          const snapshot = latestStateRef.current
+          const next = remote.state ? mergeLedgerChanges(base, snapshot, remote.state) : snapshot
+          if (!remote.state || !ledgerDataAreEqual(next, remote.state)) {
+            setSyncStatus({ type: 'saving', message: 'Saving to shared ledger...' })
+            // Keep the legacy server field stable; month navigation is local.
+            const sharedNext = remote.state ? { ...next, selectedMonth: remote.state.selectedMonth } : next
+            if (!await saveSharedLedger(sharedNext, user, remote.etag)) continue
           }
-        }
-
-        if (!isCancelled) {
-          setHasCompletedInitialSync(true)
-        }
-      } catch (error) {
-        console.error('Unable to load shared ledger.', error)
-        if (!isCancelled) {
-          setSyncStatus({
-            type: 'error',
-            message: 'Shared ledger unavailable. Changes are saved on this device.',
-          })
-        }
-      }
-    }
-
-    loadSharedLedger()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [authState.user])
-
-  useEffect(() => {
-    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync || !authState.user) {
-      return undefined
-    }
-
-    if (skipNextRemoteSaveRef.current) {
-      skipNextRemoteSaveRef.current = false
-      return undefined
-    }
-
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        setSyncStatus({
-          type: 'saving',
-          message: 'Saving to shared ledger...',
-        })
-        await saveSharedLedger(trackerState, authState.user)
-        setSyncStatus({
-          type: 'synced',
-          message: `Shared ledger saved ${formatSyncTime(new Date())}`,
-        })
-      } catch (error) {
-        console.error('Unable to save shared ledger.', error)
-        setSyncStatus({
-          type: 'error',
-          message: 'Shared save failed. This device still has your latest changes.',
-        })
-      }
-    }, 450)
-
-    return () => window.clearTimeout(timeoutId)
-  }, [trackerState, hasCompletedInitialSync, authState.user])
-
-  useEffect(() => {
-    if (!REMOTE_SYNC_URL || !hasCompletedInitialSync || !authState.user) {
-      return undefined
-    }
-
-    const intervalId = window.setInterval(async () => {
-      try {
-        const sharedState = await fetchSharedLedger(authState.user)
-        if (!sharedState || statesAreEqual(sharedState, latestStateRef.current)) {
+          if (cancelled) return
+          lastPoll = Date.now()
+          const current = latestStateRef.current
+          const reconciled = mergeLedgerChanges(snapshot, current, next)
+          writeLedgerSnapshot(window.localStorage, STORAGE_KEY, REMOTE_SYNC_URL, reconciled, next)
+          syncBaselineRef.current = next
+          base = next
+          if (!statesAreEqual(current, reconciled)) {
+            backupLedger(current)
+            latestStateRef.current = reconciled
+            setTrackerState(reconciled)
+          }
+          setSyncStatus({ type: 'synced', message: 'Shared ledger synced ' + formatSyncTime(new Date()) })
           return
         }
-
-        skipNextRemoteSaveRef.current = true
-        setTrackerState(sharedState)
-        setSyncStatus({
-          type: 'synced',
-          message: `Shared ledger refreshed ${formatSyncTime(new Date())}`,
-        })
+        throw new Error('Repeated concurrent changes; retrying safely.')
       } catch (error) {
-        console.error('Unable to refresh shared ledger.', error)
-        setSyncStatus({
-          type: 'error',
-          message: 'Shared refresh failed. Retrying automatically.',
-        })
-      }
-    }, SYNC_POLL_INTERVAL_MS)
-
-    return () => window.clearInterval(intervalId)
-  }, [hasCompletedInitialSync, authState.user])
+        console.error('Unable to sync shared ledger.', error)
+        if (!cancelled) setSyncStatus({ type: 'error', message: 'Sync failed. Device changes are preserved; retrying automatically.' })
+      } finally { running = false }
+    }
+    synchronize()
+    const intervalId = window.setInterval(synchronize, 1000)
+    return () => { cancelled = true; window.clearInterval(intervalId) }
+  }, [authState.user])
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -766,6 +702,18 @@ function App() {
     setIsExpenseModalOpen(false)
   }
 
+  function handleBackup(includeRecovery = false) {
+    const state = includeRecovery
+      ? JSON.parse(window.localStorage.getItem(STORAGE_KEY + '-backups') || '[]')
+      : trackerState
+    const url = window.URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = includeRecovery ? 'expense-tracker-recovery-snapshots.json' : 'expense-tracker-all-months.json'
+    link.click()
+    window.URL.revokeObjectURL(url)
+  }
+
   function handleExport() {
     const monthlyState = getMonthlyExportState(trackerState, selectedMonth)
     const blob = new Blob([trackerStateToCsv(monthlyState)], {
@@ -792,12 +740,12 @@ function App() {
           String(reader.result || ''),
           file.name
         )
-        setTrackerState(importedState)
-        setBudgetDraft(
-          importedState.budgetsByMonth[importedState.selectedMonth] !== undefined
-            ? String(importedState.budgetsByMonth[importedState.selectedMonth])
-            : ''
-        )
+        backupLedger(latestStateRef.current)
+        const mergedState = mergeImportedLedger(latestStateRef.current, importedState)
+        writeLedgerSnapshot(window.localStorage, STORAGE_KEY, REMOTE_SYNC_URL, mergedState, syncBaselineRef.current)
+        latestStateRef.current = mergedState
+        setTrackerState(mergedState)
+        setBudgetDraft(getBudgetDraft(mergedState))
       } catch (error) {
         console.error('Unable to import file.', error)
         window.alert(
@@ -1250,10 +1198,16 @@ function App() {
               </section>
 
               <div className="settings-export-import">
-                <h3>Monthly Expense Export/Import</h3>
+                <h3>Export, Import & Backup</h3>
                 <div className="settings-data-actions" aria-label="Data controls">
                   <button className="ghost-button" type="button" onClick={handleExport}>
-                    Export
+                    Export month CSV
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => handleBackup()}>
+                    Back up all months
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => handleBackup(true)}>
+                    Download recovery snapshots
                   </button>
                   <label className="ghost-button file-input-label">
                     Import
